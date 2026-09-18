@@ -450,8 +450,22 @@ function mcpDiscoveryFingerprint(server: McpServerConfig): string {
       username: secret.username ?? '',
       value: secret.value,
     })),
-    timeouts: server.timeouts,
-    limits: server.limits,
+    // Rebuild these records field by field for the same reason `transport` is
+    // rebuilt above: `chrome.storage` re-serializes persisted objects with
+    // alphabetically ordered keys, while `normalizeServerForMutation` rebuilds
+    // them in declaration order. Passing the raw references through would make
+    // `JSON.stringify` produce two different fingerprints for one unchanged
+    // configuration, so every save would look like a discovery-affecting change
+    // and drop the tool cache for that server.
+    timeouts: {
+      connectMs: server.timeouts.connectMs,
+      requestMs: server.timeouts.requestMs,
+      discoveryMs: server.timeouts.discoveryMs,
+    },
+    limits: {
+      maxResultBytes: server.limits.maxResultBytes,
+      maxToolCount: server.limits.maxToolCount,
+    },
   });
 }
 
