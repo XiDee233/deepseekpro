@@ -7914,7 +7914,12 @@ function renderRestoredInlineAgentTraces(): number {
   const messages = getAssistantMessages();
   if (messages.length === 0) return pendingRestoredInlineAgentTraceIds.size;
 
-  const usedMessages = new Set<Element>();
+  // A message already hosting an agent console belongs to an earlier run; a
+  // restored console never anchors into it either (mirrors
+  // findInlineAgentLiveTarget, Issue #551 follow-up).
+  const usedMessages = new Set<Element>(
+    messages.filter((message) => message.querySelector(".dpp-agent-container")),
+  );
 
   for (const id of [...pendingRestoredInlineAgentTraceIds]) {
     const trace = restoredInlineAgentTraces.get(id);
