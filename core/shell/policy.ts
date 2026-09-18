@@ -1,5 +1,6 @@
 import type { McpServerConfig, McpServerCreateInput, McpToolAllowlist } from '../mcp/types';
 import { DEFAULT_MCP_REQUEST_TIMEOUT_MS } from '../mcp/config';
+import { MCP_DEFAULT_LIMITS } from '../mcp/constants';
 import { SHELL_MCP_NATIVE_HOST, SHELL_MCP_SERVER_NAME } from './contracts';
 
 export interface ShellMcpPresetOptions {
@@ -49,7 +50,11 @@ export function createShellMcpPresetInput(
     },
     limits: {
       maxResultBytes: 128_000,
-      maxToolCount: 8,
+      // SHELL_TOOL_NAMES declares 12 tools. A discovery cap below that count
+      // truncates the tail of the host's tool list (local_file_write,
+      // shell_session_begin / shell_session_exec / shell_session_end), so those
+      // tools can never be discovered and can never be enabled from the UI.
+      maxToolCount: MCP_DEFAULT_LIMITS.maxToolCount,
     },
     allowlist: {
       mode: 'allow',

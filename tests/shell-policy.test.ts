@@ -44,6 +44,15 @@ describe('createShellMcpPresetInput', () => {
     expect(SHELL_TOOL_NAMES).toContain('shell_session_end');
   });
 
+  it('caps discovery at or above the whole shell tool catalog', () => {
+    // Discovery truncates the host's tool list at this cap, and the truncation
+    // is positional: local_file_write and the shell_session_* trio are the last
+    // four entries in the catalog. A lower cap makes exactly those opt-in tools
+    // undiscoverable, so they could never be enabled from the UI.
+    expect(createShellMcpPresetInput().limits?.maxToolCount)
+      .toBeGreaterThanOrEqual(SHELL_TOOL_NAMES.length);
+  });
+
   it('upgrades legacy read-only Shell allowlists with local file tools too', () => {
     expect(buildShellAllowlistUpgrade({
       mode: 'allow',
