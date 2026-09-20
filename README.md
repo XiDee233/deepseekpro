@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/readme-header.png" width="860" alt="DeepSeek++ DeepSeek 浏览器插件和 AI Agent 工作台">
+  <img src="assets/readme-hero.png" width="860" alt="DeepSeek++ DeepSeek 浏览器插件和 AI Agent 工作台">
 </p>
 
 <h1 align="center">DeepSeek++</h1>
