@@ -1,12 +1,14 @@
 <p align="center">
-  <img src="assets/readme-hero.png" width="860" alt="DeepSeek++ DeepSeek browser extension and AI agent workspace">
+  <img src="assets/readme-hero.png" width="860" alt="DeepSeekPro DeepSeek browser extension and AI agent workspace">
 </p>
 
-<h1 align="center">DeepSeek++</h1>
+<h1 align="center">DeepSeekPro</h1>
 
 <p align="center">
-  <strong>DeepSeek browser extension for a bilingual AI agent workspace with memory, projects, Skills, MCP tools, multimodal media, browser control, saved snippets, artifact downloads, conversation export, and automation.</strong>
+  <strong>DeepSeekPro is a DeepSeek browser extension for a bilingual AI agent workspace with memory, projects, Skills, MCP tools, multimodal media, browser control, saved snippets, artifact downloads, conversation export, and automation.</strong>
 </p>
+
+<p align="center">We independently maintain DeepSeekPro as a browser workspace, continuously building a stronger local-first workflow around DeepSeek Web.</p>
 
 <p align="center">
   <a href="https://github.com/XiDee233/deepseek-pp_Dee/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/XiDee233/deepseek-pp_Dee?style=flat-square"></a>
@@ -34,7 +36,7 @@
 
 ## About This Repository
 
-This repository is an independent DeepSeek++ distribution maintained by **XiDee233** (Dee), derived from [zhu1090093659/deepseek-pp](https://github.com/zhu1090093659/deepseek-pp). Thanks to the upstream author for the excellent work.
+We are **XiDee233** (Dee), independently maintaining DeepSeekPro from [zhu1090093659/deepseek-pp](https://github.com/zhu1090093659/deepseek-pp). Thanks to the upstream author for the excellent work.
 
 The upstream DeepSeek++ project is open source under Apache-2.0. This repository was split from upstream `main` in September 2026 (baseline commit `0a02c72`) and has since been maintained standalone; it no longer tracks upstream. Future feature development, build artifacts, and release cadence are decided here.
 
@@ -42,11 +44,11 @@ Installation steps, build commands, extension ID notes, and release information 
 
 ## Product Positioning
 
-DeepSeek++ is an open-source browser extension for [DeepSeek Web](https://chat.deepseek.com), with support for Chrome, Edge, and Firefox. It turns DeepSeek Web into an AI agent workspace where users can run English or Simplified Chinese UI, MCP tools, image/video multimodal analysis, long-term memory, Skills, system prompt presets, web search, web fetch, conversation export, and scheduled automation in the same browser workflow.
+DeepSeekPro is an open-source browser extension for [DeepSeek Web](https://chat.deepseek.com), with support for Chrome, Edge, and Firefox. It turns DeepSeek Web into an AI agent workspace where users can run English or Simplified Chinese UI, MCP tools, image/video multimodal analysis, long-term memory, Skills, system prompt presets, web search, web fetch, conversation export, and scheduled automation in the same browser workflow.
 
-In plain terms, it is a DeepSeek Chrome extension, DeepSeek MCP tools extension, DeepSeek memory plugin, DeepSeek conversation export tool, and AI agent browser extension for DeepSeek Web.
+In plain terms, DeepSeekPro is a DeepSeek Chrome extension, DeepSeek MCP tools extension, DeepSeek memory plugin, DeepSeek conversation export tool, and AI agent browser extension for DeepSeek Web.
 
-Language can follow the browser or be set to English or Simplified Chinese. DeepSeek++ keeps the side panel, context menus, tool results, built-in Skill behavior, and continuation prompts in the selected language while preserving user-authored memories, presets, custom Skills, automation tasks, and sync data as written.
+Language can follow the browser or be set to English or Simplified Chinese. DeepSeekPro keeps the side panel, context menus, tool results, built-in Skill behavior, and continuation prompts in the selected language while preserving user-authored memories, presets, custom Skills, automation tasks, and sync data as written.
 
 ## Table of Contents
 
@@ -61,7 +63,7 @@ Language can follow the browser or be set to English or Simplified Chinese. Deep
 
 ## Feature Overview
 
-| Need | What DeepSeek++ provides |
+| Need | What DeepSeekPro provides |
 |------|--------------------------|
 | AI agent browser extension | Turns DeepSeek Web into a browser-based workspace that can continue tasks, call tools, reuse memory, and schedule automation. |
 | DeepSeek browser extension / DeepSeek Chrome extension | Adds side-panel chat, a floating chat launcher on normal web pages, right-click text sending, tool-result rendering, and Chrome / Edge / Firefox support for DeepSeek Web. |

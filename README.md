@@ -1,11 +1,11 @@
 <p align="center">
-  <img src="assets/readme-hero.png" width="860" alt="DeepSeek++ DeepSeek 浏览器插件和 AI Agent 工作台">
+  <img src="assets/readme-hero.png" width="860" alt="DeepSeekPro DeepSeek 浏览器插件和 AI Agent 工作台">
 </p>
 
-<h1 align="center">DeepSeek++</h1>
+<h1 align="center">DeepSeekPro</h1>
 
 <p align="center">
-  <strong>DeepSeek++：把 DeepSeek 网页版扩展成支持中英文体验、记忆、项目、Skill、MCP、多模态媒体、浏览器控制、保存项、产物下载、对话导出和自动化的 AI Agent 工作台</strong>
+  <strong>DeepSeekPro：把 DeepSeek 网页版扩展成支持中英文体验、记忆、项目、Skill、MCP、多模态媒体、浏览器控制、保存项、产物下载、对话导出和自动化的 AI Agent 工作台</strong>
 </p>
 
 <p align="center">
@@ -34,7 +34,7 @@
 
 ## 关于本仓库
 
-本仓库是 **XiDee233**（Dee）维护的 DeepSeek++ 独立版本，从 [zhu1090093659/deepseek-pp](https://github.com/zhu1090093659/deepseek-pp) 派生而来，感谢上游作者的出色工作。
+我们是 **XiDee233**（Dee）独立维护的 DeepSeekPro 项目，源自 [zhu1090093659/deepseek-pp](https://github.com/zhu1090093659/deepseek-pp)，感谢上游作者的出色工作。
 
 上游 DeepSeek++ 以 Apache-2.0 协议开源。本仓库于 2026 年 9 月从上游 `main` 分支分出（基线提交 `0a02c72`），此后作为独立仓库单独维护，不再跟随上游同步；功能演进、构建产物和发布节奏均由本仓库自行决定。
 
@@ -42,11 +42,11 @@
 
 ## 产品定位
 
-DeepSeek++ 是面向 [DeepSeek](https://chat.deepseek.com) 网页版的开源浏览器扩展，支持 Chrome、Edge 和 Firefox。它把 DeepSeek Web 扩展成 AI agent workspace，让用户在同一浏览器工作流里使用中英文界面、MCP 工具、图片/视频多模态分析、长期记忆、Skill、系统提示词预设、联网搜索、网页读取、对话导出和定时自动化。
+DeepSeekPro 是面向 [DeepSeek](https://chat.deepseek.com) 网页版的开源浏览器扩展，支持 Chrome、Edge 和 Firefox。它把 DeepSeek Web 扩展成 AI agent workspace，让用户在同一浏览器工作流里使用中英文界面、MCP 工具、图片/视频多模态分析、长期记忆、Skill、系统提示词预设、联网搜索、网页读取、对话导出和定时自动化。
 
-如果你在寻找 DeepSeek Chrome extension、DeepSeek MCP tools、DeepSeek memory plugin、DeepSeek conversation export 或 DeepSeek AI agent，DeepSeek++ 对应的是同一个本地优先的 DeepSeek 浏览器增强工作台。
+如果你在寻找 DeepSeek Chrome extension、DeepSeek MCP tools、DeepSeek memory plugin、DeepSeek conversation export 或 DeepSeek AI agent，DeepSeekPro 对应的是同一个本地优先的 DeepSeek 浏览器增强工作台。
 
-语言可设为跟随浏览器、简体中文或 English。DeepSeek++ 会让侧边栏、右键菜单、工具结果、内置 Skill 行为和自动续跑提示保持一致语言，同时保留用户自己写的记忆、预设、自定义 Skill、自动化任务和同步数据原文。
+语言可设为跟随浏览器、简体中文或 English。DeepSeekPro 会让侧边栏、右键菜单、工具结果、内置 Skill 行为和自动续跑提示保持一致语言，同时保留用户自己写的记忆、预设、自定义 Skill、自动化任务和同步数据原文。
 
 ## 目录
 
@@ -61,7 +61,7 @@ DeepSeek++ 是面向 [DeepSeek](https://chat.deepseek.com) 网页版的开源浏
 
 ## 功能速览
 
-| 需求 | DeepSeek++ 提供 |
+| 需求 | DeepSeekPro 提供 |
 |------|----------------|
 | AI agent browser extension / AI Agent 工作台 | 把 DeepSeek Web 扩展成可以持续执行任务、调用工具、复用记忆和调度自动化的浏览器内工作台。 |
 | DeepSeek browser extension / DeepSeek Chrome extension | 在 DeepSeek 网页版中加入侧边栏对话、普通网页悬浮聊天入口、右键发送文本、工具执行结果展示和 Chrome / Edge / Firefox 支持。 |
