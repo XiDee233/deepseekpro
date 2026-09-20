@@ -21,8 +21,14 @@ export function extractToolCalls(text: string, input?: ToolParsingInput): ToolCa
   const catalog = createToolInvocationCatalog(input?.descriptors);
   return [
     ...extractXmlToolCalls(text, catalog),
-    ...extractLegacyToolCalls(text, catalog),
+    ...collectLegacyToolCalls(text, catalog),
   ];
+}
+
+// Streaming already owns XML calls. Its completion pass must only parse DSML,
+// otherwise the same XML occurrence receives a second execution identity.
+export function extractLegacyToolCalls(text: string, input?: ToolParsingInput): ToolCall[] {
+  return collectLegacyToolCalls(text, createToolInvocationCatalog(input?.descriptors));
 }
 
 /**
@@ -97,7 +103,7 @@ function extractXmlToolCalls(text: string, catalog: ToolInvocationCatalog): Tool
  * Linear-time legacy `｜DSML｜tool_calls` extraction. Replaces the
  * `[\s\S]*?`-based legacy regexes (same ReDoS class as the XML parser).
  */
-function extractLegacyToolCalls(text: string, catalog: ToolInvocationCatalog): ToolCall[] {
+function collectLegacyToolCalls(text: string, catalog: ToolInvocationCatalog): ToolCall[] {
   const calls: ToolCall[] = [];
   let fromIndex = 0;
 

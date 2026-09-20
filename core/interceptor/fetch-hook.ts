@@ -42,7 +42,7 @@ import {
   createStreamingToolCallParser,
   type ToolCallPayloadChunk,
 } from "./streaming-tool-call-parser";
-import { extractToolCalls } from "./tool-parser";
+import { extractLegacyToolCalls } from "./tool-parser";
 
 const BYPASS_HOOK_HEADER = DEEPSEEK_BYPASS_HOOK_HEADER;
 const TOKEN_SPEED_EMIT_INTERVAL_MS = 250;
@@ -632,7 +632,7 @@ function createStreamingResponseToolState(
   const toolCalls = createStreamingToolCallParser(descriptors, {
     activeLocalSkillDir: options.activeLocalSkillDir,
   });
-  const notifiedToolSignatures = new Set<string>();
+  const notifiedToolCallIds = new Set<string>();
   let fallbackText = "";
   let fallbackTextTruncated = false;
   let legacyCallIndex = 0;
@@ -646,9 +646,12 @@ function createStreamingResponseToolState(
 
   const emitCompleted = (call: ToolCall) => {
     const callWithSource = { ...call, source: getSource() };
-    notifiedToolSignatures.add(
-      createToolCallNotificationSignature(callWithSource),
-    );
+    // Each XML occurrence owns a parser ID within this response. Equal payloads
+    // are still separate calls, and raw is only a possibly truncated preview.
+    if (call.id) {
+      if (notifiedToolCallIds.has(call.id)) return;
+      notifiedToolCallIds.add(call.id);
+    }
     hookState.onToolCall(callWithSource);
   };
 
@@ -694,7 +697,7 @@ function createStreamingResponseToolState(
 
   function notifyLegacyFallbackToolCalls() {
     if (fallbackTextTruncated || !fallbackText.includes("｜DSML｜")) return;
-    for (const call of extractToolCalls(fallbackText, { descriptors })) {
+    for (const call of extractLegacyToolCalls(fallbackText, { descriptors })) {
       const source = getSource();
       const callWithSource = {
         ...call,
@@ -703,10 +706,7 @@ function createStreamingResponseToolState(
           `legacy:${source.requestId ?? "request"}:${legacyCallIndex++}`,
         source,
       };
-      const signature = createToolCallNotificationSignature(callWithSource);
-      if (notifiedToolSignatures.has(signature)) continue;
-      notifiedToolSignatures.add(signature);
-      hookState.onToolCall(callWithSource);
+      emitCompleted(callWithSource);
     }
   }
 }
@@ -715,12 +715,6 @@ function shouldRenderStreamingToolStart(call: ToolCall): boolean {
   return (
     call.name === "artifact_create" || call.name === "artifact_bundle_create"
   );
-}
-
-function createToolCallNotificationSignature(call: ToolCall): string {
-  return call.id
-    ? `id:${call.id}`
-    : `${call.provider?.id ?? ""}:${call.name}:${call.invocationName ?? ""}:${call.raw}`;
 }
 
 function createManualChatToolCallSource(
@@ -1695,24 +1689,40 @@ export async function interceptFetchResponse(
     {
       async pull(controller) {
         if (cancelled || finished) return;
+        let emitted = false;
+        const outputController: ReadableStreamDefaultController<Uint8Array> = {
+          get desiredSize() { return controller.desiredSize; },
+          enqueue(chunk) {
+            emitted = true;
+            controller.enqueue(chunk);
+          },
+          close: () => controller.close(),
+          error: (reason) => controller.error(reason),
+        };
         try {
-          const { done, value } = await reader.read();
-          if (cancelled) return;
-          if (!done) {
-            getStreamState().append(
-              decoder.decode(value, { stream: true }),
-              controller,
-            );
-            return;
-          }
+          // With highWaterMark: 0, a pull that emits nothing is not retried for
+          // the pending read. Consume hidden/partial frames until there is
+          // output or EOF, then yield to preserve consumer backpressure.
+          while (!cancelled && !finished) {
+            const { done, value } = await reader.read();
+            if (cancelled) return;
+            if (!done) {
+              getStreamState().append(
+                decoder.decode(value, { stream: true }),
+                outputController,
+              );
+              if (emitted) return;
+              continue;
+            }
 
-          const finalText = decoder.decode();
-          if (finalText) getStreamState().append(finalText, controller);
-          const complete = getStreamState().finish(controller);
-          if (complete) hookState.onResponseComplete(complete);
-          finished = true;
-          controller.close();
-          notifyTerminal();
+            const finalText = decoder.decode();
+            if (finalText) getStreamState().append(finalText, controller);
+            const complete = getStreamState().finish(controller);
+            if (complete) hookState.onResponseComplete(complete);
+            finished = true;
+            controller.close();
+            notifyTerminal();
+          }
         } catch (error) {
           cancelled = true;
           streamState?.cancel();
