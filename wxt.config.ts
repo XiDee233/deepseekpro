@@ -16,6 +16,7 @@ const rootDir = dirname(fileURLToPath(import.meta.url));
 const safeWxtBrowser = resolve(rootDir, 'core/browser/safe-wxt-browser.ts');
 const CHROMIUM_BROWSERS = new Set(['chrome', 'edge']);
 const extensionVersion = readPackageVersion();
+const diagnosticBuildId = `${extensionVersion}:${new Date().toISOString()}`;
 const MANIFEST_NAME = '__MSG_extension_name__';
 const MANIFEST_DESCRIPTION = '__MSG_extension_description__';
 const MANIFEST_ACTION_TITLE = '__MSG_extension_action_title__';
@@ -265,6 +266,7 @@ export default defineConfig({
     },
   },
   vite: () => ({
+    define: { __DPP_BUILD_ID__: JSON.stringify(diagnosticBuildId) },
     plugins: [tailwindcss(), asciiJavaScriptOutputPlugin()],
     build: {
       modulePreload: {

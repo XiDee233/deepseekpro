@@ -23,6 +23,7 @@ import type { StreamFn } from '@earendil-works/pi-agent-core';
 import type { Context, ToolCall } from '@earendil-works/pi-ai';
 import type { ToolDescriptor } from '../../types';
 import type { ResponseTokenSpeedPayload } from '../../deepseek/stream-metrics';
+import type { AgentDiagnosticSink } from '../../diagnostics/agent-contract';
 
 /** One DS-web turn request — the serializable wire contract. */
 export interface DeepSeekTurnRequest {
@@ -124,6 +125,7 @@ export interface DeepSeekStreamFnDeps {
    * (A3) wires this to the `AGENT_TOKEN_SPEED` page event.
    */
   onTokenSpeed?: (progress: ResponseTokenSpeedPayload) => void;
+  onDiagnostic?: AgentDiagnosticSink;
 }
 
 /** The pi StreamFn factory implemented by the DS-web adapter. */

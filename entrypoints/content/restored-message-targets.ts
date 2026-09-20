@@ -28,6 +28,7 @@ export function getRestoredMessageMutationAction(
 export function mutationMayAffectRestoredMessageTarget(
   mutation: MutationRecord,
 ): boolean {
+  if (isAssistantMessageIdentityMutation(mutation)) return true;
   if (mutation.type === 'characterData') {
     return nodeMayAffectRestoredMessageTarget(mutation.target);
   }
@@ -49,6 +50,7 @@ function mutationMayInvalidateRestoredMessageUi(
   mutation: MutationRecord,
   restoredUiSelector: string,
 ): boolean {
+  if (isAssistantMessageIdentityMutation(mutation)) return true;
   if (mutation.type !== 'childList') return false;
 
   return Array.from(mutation.addedNodes).some(nodeMountsMessage) ||
@@ -66,3 +68,4 @@ function nodeMatchesOrContains(node: Node, selector: string): boolean {
     node.matches(selector) || Boolean(node.querySelector(selector))
   );
 }
+import { isAssistantMessageIdentityMutation } from '../../core/inline-agent/message-anchor';

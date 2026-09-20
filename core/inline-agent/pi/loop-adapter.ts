@@ -60,6 +60,10 @@ import type {
 } from '../types';
 import { INLINE_AGENT_MAX_STEPS } from '../types';
 import { waitBetweenDeepSeekRequests } from '../step-control';
+import type { AgentDiagnosticEvent, AgentDiagnosticReason, AgentDiagnosticSink } from '../../diagnostics/agent-contract';
+import { emitAgentDiagnostic } from '../../diagnostics/agent-reporter';
+import { summarizeToolProtocol } from '../../diagnostics/tool-protocol';
+import { classifyDiagnosticFailure } from '../../diagnostics/failure-kind';
 
 export type PostFn = (type: string, data: unknown) => void;
 export type ExecuteToolFn = (call: ToolCall) => Promise<ToolExecutionRecord>;
@@ -72,6 +76,7 @@ export interface PiLoopAdapterDeps {
   post: PostFn;
   executeTool: ExecuteToolFn;
   signal: AbortSignal;
+  onDiagnostic?: AgentDiagnosticSink;
 }
 
 /** Runs the pi engine with the released inline-agent semantics. */
@@ -128,6 +133,25 @@ export async function runPiInlineAgentLoop(deps: PiLoopAdapterDeps): Promise<voi
   let lastTurnText = '';
   let lastTurnHasTools = false;
   let turnsElapsed = 0;
+  const startedAt = Date.now();
+  let exitReason: AgentDiagnosticReason = 'engine_ended';
+  const diagnose = (event: AgentDiagnosticEvent) => emitAgentDiagnostic(deps.onDiagnostic, {
+    requestId: payload.capabilityScopeRequestId ?? `agent:${loopId}`,
+    chatSessionId, loopId, backend, stepIndex, nudgeCount: nudge.count,
+    ...event,
+  });
+  const decide = (stop: boolean, reason: AgentDiagnosticReason, nudgeNeeded?: boolean): boolean => {
+    if (stop) exitReason = reason;
+    diagnose({ event: 'turn_decision', reason, hasChain: hasContinuableChain(),
+      isNudge: nudge.currentTurnIsNudge, ...(nudgeNeeded === undefined ? {} : { nudgeNeeded }),
+      textLength: lastTurnText.length });
+    return stop;
+  };
+  const diagnoseExit = (reason: AgentDiagnosticReason) => diagnose({
+    event: 'loop_finished', reason, toolCount: collectedExecutions.length,
+    elapsedMs: Date.now() - startedAt,
+  });
+  diagnose({ event: 'loop_started', toolCount: collectedExecutions.length, hasChain: hasContinuableChain() });
 
   const clampStreamEventText = (value: string): string =>
     value.length > INLINE_AGENT_STREAM_EVENT_MAX_CHARS
@@ -219,12 +243,14 @@ export async function runPiInlineAgentLoop(deps: PiLoopAdapterDeps): Promise<voi
     }, {
       toolDescriptors,
       mapToolCall,
+      onDiagnostic: (event) => diagnose({ ...event, requestCount }),
     });
     model = provider.getModels()[0];
     streamFn = deepSeekApiProviderToStreamFn(provider);
   } else {
     const submitter = createDeepSeekTurnSubmitter({ powWasmUrl });
     const streamFnDeps = {
+      onDiagnostic: (event) => diagnose({ ...event, requestCount }),
       submitTurn: submitter,
       session,
       serializePrompt: () => {
@@ -281,6 +307,8 @@ export async function runPiInlineAgentLoop(deps: PiLoopAdapterDeps): Promise<voi
       await waitBetweenDeepSeekRequests(signal);
     }
     requestCount += 1;
+    diagnose({ event: 'model_request', requestCount, hasChain: hasContinuableChain(),
+      isNudge: nudge.active || nudge.currentTurnIsNudge });
     return streamFn(model, context, options);
   };
 
@@ -306,26 +334,30 @@ export async function runPiInlineAgentLoop(deps: PiLoopAdapterDeps): Promise<voi
         if (stopNotice === null && collectedExecutions.length > 0) {
           stopNotice = buildInlineAgentBudgetNotice(locale, stepIndex);
         }
-        return true;
+        return decide(true, 'step_budget');
       }
       const text = lastTurnText;
       const hasTools = lastTurnHasTools;
 
       if (!hasContinuableChain()) {
         if (hasTools) {
+          exitReason = 'missing_chain_with_tools';
+          diagnose({ event: 'turn_decision', reason: exitReason, hasChain: false });
           throw new Error(chainErrorText(nudge.currentTurnIsNudge));
         }
         if (!text.trim()) {
+          exitReason = 'empty_response_without_chain';
+          diagnose({ event: 'turn_decision', reason: exitReason, hasChain: false });
           throw new Error('DeepSeek returned an empty agent continuation without a continuable response message.');
         }
         resolvedFinalText = text;
-        return true;
+        return decide(true, 'text_without_chain');
       }
-      if (hasTools) return false;
+      if (hasTools) return decide(false, 'tools_pending');
 
       if (extractTaskCompleteSignal(text)) {
         resolvedFinalText = text;
-        return true;
+        return decide(true, 'task_complete_signal');
       }
       // Nudge decisions run on the USER-VISIBLE text: retired artifact XML
       // (an internal control protocol the loop cannot execute) is stripped
@@ -344,11 +376,11 @@ export async function runPiInlineAgentLoop(deps: PiLoopAdapterDeps): Promise<voi
         } else {
           resolvedFinalText = text;
         }
-        return true;
+        return decide(true, nudging ? 'nudge_exhausted' : 'nudge_resolved', nudging);
       }
-      if (nudging) return false; // getSteeringMessages issues the single-step nudge
+      if (nudging) return decide(false, 'nudge_needed', true); // steering issues the single-step nudge
       resolvedFinalText = text;
-      return true;
+      return decide(true, 'natural_answer', false);
     },
     // The pi inner loop only continues with another LLM call when tools were
     // executed or steering messages are pending. The released nudge semantics
@@ -370,6 +402,7 @@ export async function runPiInlineAgentLoop(deps: PiLoopAdapterDeps): Promise<voi
         nudge.nudgedInStep = true;
         nudge.pendingTurn = true;
         nudge.active = true;
+        diagnose({ event: 'nudge_queued', reason: 'nudge_needed' });
         // The nudge shows the model what the USER saw: retired artifact XML
         // is internal protocol, so the model sees the visible tail (e.g. the
         // empty promise) and re-delivers in a renderable form.
@@ -440,6 +473,7 @@ export async function runPiInlineAgentLoop(deps: PiLoopAdapterDeps): Promise<voi
         postToolDetected(event.toolCallId, event.toolName, event.args);
         break;
       case 'tool_execution_end': {
+        diagnose({ event: 'tool_result', toolCallId: event.toolCallId, ok: !event.isError });
         const descriptor = descriptorByName.get(event.toolName);
         const resultMessage: ToolResultMessage = {
           role: 'toolResult',
@@ -460,6 +494,12 @@ export async function runPiInlineAgentLoop(deps: PiLoopAdapterDeps): Promise<voi
       case 'turn_end': {
         turnsElapsed += 1;
         const turnMessage = event.message as AssistantMessage;
+        diagnose({ event: 'turn_finished', modelStopReason: turnMessage.stopReason,
+          toolCount: turnMessage.content.filter((block) => block.type === 'toolCall').length,
+          textLength: extractText(turnMessage).length,
+          ...(turnMessage.stopReason === 'error' ? classifyDiagnosticFailure(turnMessage.errorMessage) : {}),
+          ...summarizeToolProtocol(extractText(turnMessage)),
+          hasChain: hasContinuableChain(), requestCount });
         if (turnMessage.stopReason === 'error' || turnMessage.stopReason === 'aborted') {
           lastTurnWasError = true;
           lastErrorMessage = turnMessage.errorMessage ?? 'DeepSeek agent turn failed.';
@@ -501,6 +541,7 @@ export async function runPiInlineAgentLoop(deps: PiLoopAdapterDeps): Promise<voi
     finalizeDone = true;
 
     if (signal.aborted || lastTurnWasError && signal.aborted) {
+      diagnoseExit('aborted');
       post('AGENT_LOOP_COMPLETE', {
         loopId,
         totalSteps: stepIndex,
@@ -510,6 +551,7 @@ export async function runPiInlineAgentLoop(deps: PiLoopAdapterDeps): Promise<voi
       return;
     }
     if (lastTurnWasError) {
+      diagnoseExit('model_error');
       post('AGENT_LOOP_ERROR', {
         loopId,
         stepIndex,
@@ -521,6 +563,7 @@ export async function runPiInlineAgentLoop(deps: PiLoopAdapterDeps): Promise<voi
     if (stopNotice === null && resolvedFinalText === null && collectedExecutions.length > 0
       && stepIndex >= INLINE_AGENT_MAX_STEPS) {
       stopNotice = buildInlineAgentBudgetNotice(locale, stepIndex);
+      exitReason = 'step_budget';
     }
     if (!lastStepCompleted) {
       postStepComplete();
@@ -531,6 +574,7 @@ export async function runPiInlineAgentLoop(deps: PiLoopAdapterDeps): Promise<voi
     } else if (!signal.aborted && stopNotice !== null) {
       finalText = stopNotice;
     }
+    diagnoseExit(exitReason);
     post('AGENT_LOOP_COMPLETE', {
       loopId,
       totalSteps: lastStepCompleted ? stepIndex : stepIndex + 1,
@@ -558,6 +602,7 @@ export async function runPiInlineAgentLoop(deps: PiLoopAdapterDeps): Promise<voi
     if (finalizeDone) return;
     finalizeDone = true;
     if (signal.aborted) {
+      diagnoseExit('aborted');
       post('AGENT_LOOP_COMPLETE', {
         loopId,
         totalSteps: stepIndex,
@@ -566,6 +611,8 @@ export async function runPiInlineAgentLoop(deps: PiLoopAdapterDeps): Promise<voi
       });
       return;
     }
+    diagnose({ event: 'loop_finished', reason: exitReason === 'engine_ended' ? 'loop_error' : exitReason,
+      toolCount: collectedExecutions.length, elapsedMs: Date.now() - startedAt, ...classifyDiagnosticFailure(err) });
     post('AGENT_LOOP_ERROR', {
       loopId,
       stepIndex,

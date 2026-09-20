@@ -1,18 +1,18 @@
 # Runtime Command Name Inventory
 
-Compatibility-run baseline: v1.10.0, commit `165ec46`, with 119 live-router names and 89 `MessageAction` names. Current authority includes the MCP Capability Plane settings contract. This annex is the name-level authority for `RT-001`; it freezes the 129 live names and 98 declared names while documenting, rather than accepting, the router/union split.
+Compatibility-run baseline: v1.10.0, commit `165ec46`, with 119 live-router names and 89 `MessageAction` names. Current authority includes the MCP Capability Plane settings contract. This annex is the name-level authority for `RT-001`; it freezes the 132 live names and 100 declared names while documenting, rather than accepting, the router/union split.
 
 ## Invariants
 
-- The production registry owns 129 live commands exactly once through typed handlers; no transitional case or legacy router remains.
-- `core/types.ts::MessageAction` declares 98 unique command names.
-- Ninety-six names are shared, 33 are live-router-only, and two are declared-only.
+- The production registry owns 132 live commands exactly once through typed handlers; no transitional case or legacy router remains.
+- `core/types.ts::MessageAction` declares 100 unique command names.
+- Ninety-eight names are shared, 34 are live-router-only, and two are declared-only.
 - A live name and its legal behavior remain compatible until an explicit migration changes the contract.
 - `TOOL_CALL_EXECUTED` and `MEMORIES_UPDATED` are client-only notifications, not live background commands; direct background dispatch rejects them with `runtime_command_unknown`.
 - R3.1 / #351 establishes the typed handler seam and explicit unknown-command failure. R4.1–R4.4 migrate their exact `61 / 32 / 16 / 18` command slices without changing the frozen live-name surface.
 - The ownership ledger below is authoritative for cutover scope. A live command appears exactly once; a task must not absorb a command assigned to another Issue.
 
-The production ownership model and the cutover ledger serve different purposes. `core/messaging/runtime-command-contracts.ts` is the single 131-name metadata and current-owner authority (`129 typed / 0 legacy / 2 client-only`), consumed by the dispatch registry; the sections below retain historical migration ownership (`2 / 61 / 32 / 16 / 18`). Contract tests fail on a duplicate, missing, or cross-owner name.
+The production ownership model and the cutover ledger serve different purposes. `core/messaging/runtime-command-contracts.ts` is the single 134-name metadata and current-owner authority (`132 typed / 0 legacy / 2 client-only`), consumed by the dispatch registry; the sections below retain historical migration ownership (`2 / 61 / 32 / 16 / 18`). Contract tests fail on a duplicate, missing, or cross-owner name.
 
 ## Replanned Cutover Ownership — 129 Live Commands
 
@@ -174,7 +174,15 @@ EXPORT_DIAGNOSTIC_LOGS
 
 `TOOL_CALL_EXECUTED` and `MEMORIES_UPDATED` remain declared-only compatibility records. They are not counted in the 129 live command owners and R3.1 must classify them explicitly rather than invent handlers.
 
-## Live Background Router — 131
+### Diagnostic observability additions (1)
+
+```text
+RECORD_AGENT_DIAGNOSTIC
+```
+
+Metadata-only content telemetry, decoded after browser-sender authorization. No persistence or execution authority is added.
+
+## Live Background Router — 132
 
 ```text
 GET_MEMORIES
@@ -300,6 +308,7 @@ EXPORT_DEEPSEEK_CONVERSATIONS
 CANCEL_DEEPSEEK_EXPORT
 AUTH_STATUS_CHANGED
 EXPORT_DIAGNOSTIC_LOGS
+RECORD_AGENT_DIAGNOSTIC
 GET_AUTOMATIONS
 GET_AUTOMATION_RUNS
 CREATE_AUTOMATION
@@ -415,7 +424,7 @@ GET_MCP_REQUEST_TIMEOUT
 SET_MCP_REQUEST_TIMEOUT
 ```
 
-## Live Router Only — 33
+## Live Router Only — 34
 
 ```text
 TOUCH_MEMORIES
@@ -443,6 +452,7 @@ EXPORT_DEEPSEEK_CONVERSATIONS
 CANCEL_DEEPSEEK_EXPORT
 AUTH_STATUS_CHANGED
 EXPORT_DIAGNOSTIC_LOGS
+RECORD_AGENT_DIAGNOSTIC
 GET_AUTOMATIONS
 GET_AUTOMATION_RUNS
 CREATE_AUTOMATION
@@ -462,4 +472,4 @@ MEMORIES_UPDATED
 
 ## Validation Method
 
-`tests/runtime-command-contract.test.ts` derives the typed registry and literal `MessageAction` names, then compares them with this inventory and the production 131-name contract map. It freezes `129/98/96/33/2`, current `85/44` payload access, `129/0/2` ownership, and `85 decoded / 0 direct-cast / 0 delegated`; it also proves the historical `2/61/32/16/18` cutover partition. `SCENARIOS_UPDATED` is the only released payload-less command extended with an optional request, preserving its old call and response. Serializable specimens cover every request/response/error family without creating another command-name authority.
+`tests/runtime-command-contract.test.ts` derives the typed registry and literal `MessageAction` names, then compares them with this inventory and the production 134-name contract map. It freezes `132/100/98/34/2`, current `87/45` payload access, `132/0/2` ownership, and `87 decoded / 0 direct-cast / 0 delegated`; it also proves the historical `2/61/32/16/18` cutover partition. `SCENARIOS_UPDATED` is the only released payload-less command extended with an optional request, preserving its old call and response. Serializable specimens cover every request/response/error family without creating another command-name authority.

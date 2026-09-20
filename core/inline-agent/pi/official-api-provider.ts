@@ -50,6 +50,9 @@ import { createStreamingToolCallParser } from '../../interceptor/streaming-tool-
 import { createStreamingToolTextAccumulator } from '../../interceptor/streaming-tool-text';
 import type { ToolCall as CoreToolCall } from '../../types';
 import type { ToolDescriptor } from '../../types';
+import type { AgentDiagnosticSink } from '../../diagnostics/agent-contract';
+import { createToolProtocolCounter } from '../../diagnostics/tool-protocol';
+import { emitAgentDiagnostic } from '../../diagnostics/agent-reporter';
 import {
   DEEPSEEK_API,
   DEEPSEEK_API_PROVIDER,
@@ -58,6 +61,7 @@ import {
 } from './official-api-port';
 
 export interface DeepSeekApiProviderOptions {
+  onDiagnostic?: AgentDiagnosticSink;
   /** Tool descriptors used to parse XML tool calls out of the text stream. */
   toolDescriptors: readonly ToolDescriptor[];
   /** Maps a parsed XML tool call to the pi ToolCall shape (like the web path). */
@@ -126,7 +130,7 @@ export function createDeepSeekApiStreamFn(
   options: DeepSeekApiProviderOptions,
 ): StreamFn {
   const { getApiKey, getConfig, mapMessages, onReasoningChunk } = deps;
-  const { toolDescriptors, mapToolCall } = options;
+  const { toolDescriptors, mapToolCall, onDiagnostic } = options;
 
   return (model, context, options) => {
     const stream = createAssistantMessageEventStream();
@@ -139,6 +143,10 @@ export function createDeepSeekApiStreamFn(
     emit({ type: 'start', partial: snapshot() });
 
     void (async () => {
+      const diagnosticProtocol = createToolProtocolCounter();
+      let diagnosticChars = 0;
+      let diagnosticParseErrors = 0;
+      let diagnosticFinished = false;
       try {
         const apiKey = await getApiKey();
         if (!apiKey) {
@@ -193,6 +201,7 @@ export function createDeepSeekApiStreamFn(
         };
 
         const onParsed = (parsed: { completed: CoreToolCall[]; failed: CoreToolCall[] }) => {
+          diagnosticParseErrors += [...parsed.completed, ...parsed.failed].filter((call) => call.parseError).length;
           for (const call of parsed.completed) {
             emitToolCall({ name: call.name, invocationName: call.invocationName ?? call.name, payload: call.payload });
           }
@@ -207,6 +216,8 @@ export function createDeepSeekApiStreamFn(
           messages: mapMessages(context.messages),
         }, {
           onTextChunk(text) {
+            diagnosticProtocol.append(text);
+            diagnosticChars += text.length;
             emitText(textAccumulator.append(text));
             onParsed(toolCallParser.append(text));
           },
@@ -215,6 +226,7 @@ export function createDeepSeekApiStreamFn(
             emitThinking(fullText);
           },
         }, signal);
+        diagnosticFinished = true;
 
         onParsed(toolCallParser.flush());
         emitText(textAccumulator.flush());
@@ -244,6 +256,10 @@ export function createDeepSeekApiStreamFn(
         partial.stopReason = aborted ? 'aborted' : 'error';
         partial.errorMessage = aborted ? 'Aborted' : (err instanceof Error ? err.message : String(err));
         emit({ type: 'error', reason: partial.stopReason, error: snapshot() });
+      } finally {
+        emitAgentDiagnostic(onDiagnostic, { event: 'model_stream_summary',
+          wireChars: diagnosticChars, parseErrorCount: diagnosticParseErrors,
+          streamFinished: diagnosticFinished, ...diagnosticProtocol.snapshot() });
       }
     })();
 

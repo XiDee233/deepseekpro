@@ -1,4 +1,5 @@
 import type { ContentResourceScope } from '../lifecycle';
+import { ASSISTANT_MESSAGE_ID_ATTRIBUTES } from '../../../core/inline-agent/message-anchor';
 
 export interface ContentMutationSubscription {
   readonly matches: (mutations: readonly MutationRecord[]) => boolean;
@@ -54,6 +55,8 @@ export function createContentMutationHub(options: {
         childList: true,
         subtree: true,
         characterData: true,
+        attributes: true,
+        attributeFilter: [...ASSISTANT_MESSAGE_ID_ATTRIBUTES],
       });
     },
     stop() {

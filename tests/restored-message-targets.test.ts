@@ -5,6 +5,15 @@ import {
 } from '../entrypoints/content/restored-message-targets';
 
 describe('restored message target mutations', () => {
+  it('requeues a mounted trace when the virtual row is recycled without replacing its children', () => {
+    const row = document.createElement('div');
+    row.setAttribute('data-virtual-list-item-key', '18');
+    row.innerHTML = '<div class="ds-message"><div class="dpp-agent-container"></div></div>';
+    const mutation = { type: 'attributes', target: row, attributeName: 'data-virtual-list-item-key' } as unknown as MutationRecord;
+    expect(getRestoredMessageMutationAction([mutation], {
+      hasPendingRecords: false, restoredUiSelector: '.dpp-agent-container',
+    })).toEqual({ requeueMountedRecords: true, schedulePendingRender: true });
+  });
   it('detects newly mounted messages and content added inside an existing message', () => {
     const message = document.createElement('article');
     message.className = 'ds-message';

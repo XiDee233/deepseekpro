@@ -43,6 +43,8 @@ import { createStreamingToolCallParser } from '../../interceptor/streaming-tool-
 import { createStreamingToolTextAccumulator } from '../../interceptor/streaming-tool-text';
 import type { ToolCall as CoreToolCall } from '../../types';
 import { createStepSignal, waitBetweenDeepSeekRequests } from '../step-control';
+import { createToolProtocolCounter } from '../../diagnostics/tool-protocol';
+import { emitAgentDiagnostic } from '../../diagnostics/agent-reporter';
 import type {
   DeepSeekStreamFnDeps,
   DeepSeekTurnCallbacks,
@@ -103,6 +105,10 @@ export function createDeepSeekStreamFn(deps: DeepSeekStreamFnDeps): StreamFn {
     emit({ type: 'start', partial: snapshot() });
 
     void (async () => {
+      const diagnosticProtocol = createToolProtocolCounter();
+      let diagnosticChars = 0;
+      let diagnosticParseErrors = 0;
+      let diagnosticFinished = false;
       try {
         const request: DeepSeekTurnRequest = {
           chatSessionId: session.chatSessionId,
@@ -167,6 +173,7 @@ export function createDeepSeekStreamFn(deps: DeepSeekStreamFnDeps): StreamFn {
         };
 
         const onParsed = (parsed: { completed: CoreToolCall[]; failed: CoreToolCall[] }) => {
+          diagnosticParseErrors += [...parsed.completed, ...parsed.failed].filter((call) => call.parseError).length;
           for (const call of parsed.completed) {
             emitToolCall({ name: call.name, invocationName: call.invocationName ?? call.name, payload: call.payload });
           }
@@ -177,6 +184,8 @@ export function createDeepSeekStreamFn(deps: DeepSeekStreamFnDeps): StreamFn {
 
         const callbacks: DeepSeekTurnCallbacks = {
           onTextChunk(text) {
+            diagnosticProtocol.append(text);
+            diagnosticChars += text.length;
             if (!fallbackRawTruncated) {
               if (fallbackRawText.length + text.length > FALLBACK_PARSE_MAX_CHARS) {
                 fallbackRawTruncated = true;
@@ -197,6 +206,7 @@ export function createDeepSeekStreamFn(deps: DeepSeekStreamFnDeps): StreamFn {
         };
 
         const result = await submitTurn(request, callbacks, signal);
+        diagnosticFinished = result.finished;
 
         // Fail-closed stream termination (Issue: mid-output silent stop): a
         // DeepSeek web stream is only complete once the server patches
@@ -249,6 +259,10 @@ export function createDeepSeekStreamFn(deps: DeepSeekStreamFnDeps): StreamFn {
         partial.stopReason = aborted ? 'aborted' : 'error';
         partial.errorMessage = aborted ? 'Aborted' : (err instanceof Error ? err.message : String(err));
         emit({ type: 'error', reason: partial.stopReason, error: snapshot() });
+      } finally {
+        emitAgentDiagnostic(deps.onDiagnostic, { event: 'model_stream_summary',
+          wireChars: diagnosticChars, parseErrorCount: diagnosticParseErrors,
+          streamFinished: diagnosticFinished, ...diagnosticProtocol.snapshot() });
       }
     })();
 

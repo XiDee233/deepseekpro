@@ -43,6 +43,9 @@ import {
   type ToolCallPayloadChunk,
 } from "./streaming-tool-call-parser";
 import { extractLegacyToolCalls } from "./tool-parser";
+import type { AgentDiagnosticSink, AgentDiagnosticEvent } from "../diagnostics/agent-contract";
+import { emitAgentDiagnostic } from "../diagnostics/agent-reporter";
+import { createToolProtocolCounter, summarizeToolProtocol } from "../diagnostics/tool-protocol";
 
 const BYPASS_HOOK_HEADER = DEEPSEEK_BYPASS_HOOK_HEADER;
 const TOKEN_SPEED_EMIT_INTERVAL_MS = 250;
@@ -62,6 +65,7 @@ const initialHookStateReady = new Promise<void>((resolve) => {
 });
 
 interface HookState {
+  onDiagnostic: AgentDiagnosticSink;
   toolDescriptors: ToolDescriptor[];
   onRequestBody: (
     body: string,
@@ -81,6 +85,7 @@ interface HookState {
 
 function createEmptyHookState(): HookState {
   return {
+    onDiagnostic: () => {},
     toolDescriptors: [],
     onRequestBody: async () => null,
     onHeadersCaptured: () => {},
@@ -636,6 +641,9 @@ function createStreamingResponseToolState(
   let fallbackText = "";
   let fallbackTextTruncated = false;
   let legacyCallIndex = 0;
+  let parsedToolCount = 0;
+  let parseErrorCount = 0;
+  const protocol = createToolProtocolCounter();
 
   const emitStarted = (call: ToolCall) => {
     const callWithSource = { ...call, source: getSource() };
@@ -653,6 +661,13 @@ function createStreamingResponseToolState(
       notifiedToolCallIds.add(call.id);
     }
     hookState.onToolCall(callWithSource);
+    parsedToolCount += 1;
+    if (call.parseError) parseErrorCount += 1;
+    emitAgentDiagnostic(hookState.onDiagnostic, {
+      event: 'tool_parsed', requestId: callWithSource.source.requestId,
+      ...(call.id ? { toolCallId: call.id } : {}), ok: !call.parseError,
+      ...(call.parseError ? { reason: 'parse_rejected' } : {}),
+    });
   };
 
   const emitChunk = (chunk: ToolCallPayloadChunk) => {
@@ -661,6 +676,7 @@ function createStreamingResponseToolState(
 
   return {
     append(text: string) {
+      protocol.append(text);
       toolText.append(text);
       appendFallbackText(text);
       const event = toolCalls.append(text);
@@ -676,6 +692,14 @@ function createStreamingResponseToolState(
       event.completed.forEach(emitCompleted);
       event.failed.forEach(emitCompleted);
       notifyLegacyFallbackToolCalls();
+      emitAgentDiagnostic(hookState.onDiagnostic, {
+        event: 'stream_summary', requestId: getSource().requestId,
+        toolCount: parsedToolCount, parseErrorCount,
+        fallbackTruncated: fallbackTextTruncated,
+        textLength: toolText.getVisibleText().length,
+        visibleDsmlMarkers: summarizeToolProtocol(toolText.getVisibleText()).dsmlMarkers,
+        ...protocol.snapshot(),
+      });
     },
     getVisibleText() {
       return toolText.getVisibleText();
@@ -1564,11 +1588,12 @@ interface PassiveDeepSeekStreamState {
   finish(
     controller: ReadableStreamDefaultController<Uint8Array>,
   ): ResponseCompletePayload | null;
-  cancel(): void;
+  cancel(reason?: 'aborted' | 'stream_error' | 'timeout'): void;
 }
 
 function createPassiveDeepSeekStreamState(
   requestContext: RequestContext,
+  transport: 'fetch' | 'xhr',
 ): PassiveDeepSeekStreamState {
   const frameDecoder = createDeepSeekSseFrameDecoder();
   const summary = createDeepSeekStreamSummary();
@@ -1578,6 +1603,15 @@ function createPassiveDeepSeekStreamState(
   );
   let cancelled = false;
   let completed = false;
+  let frameCount = 0;
+  let wireChars = 0;
+  const startedAt = Date.now();
+  const diagnose = (event: AgentDiagnosticEvent) => emitAgentDiagnostic(hookState.onDiagnostic, {
+    requestId: requestContext.requestId, transport, frameCount, wireChars,
+    ...(requestContext.chatSessionId ? { chatSessionId: requestContext.chatSessionId } : {}),
+    elapsedMs: Date.now() - startedAt, ...event,
+  });
+  diagnose({ event: 'stream_started', descriptorCount: requestContext.toolDescriptors.length });
 
   const responseToolState = createStreamingResponseToolState(
     requestContext.toolDescriptors,
@@ -1605,6 +1639,7 @@ function createPassiveDeepSeekStreamState(
     controller: ReadableStreamDefaultController<Uint8Array>,
   ) => {
     if (cancelled || frames.length === 0) return;
+    frameCount += frames.length;
     const wasFinished = summary.finished;
     consumeDeepSeekSseFrames(frames, summary, {
       retainAssistantText: false,
@@ -1624,6 +1659,7 @@ function createPassiveDeepSeekStreamState(
 
   return {
     append(text, controller) {
+      wireChars += text.length;
       processFrames(frameDecoder.push(text), controller);
     },
     finish(controller) {
@@ -1633,6 +1669,8 @@ function createPassiveDeepSeekStreamState(
       responseToolState.finish();
       speedTracker.finish();
       completed = true;
+      diagnose({ event: 'stream_summary', streamFinished: summary.finished,
+        ...(summary.responseMessageId == null ? {} : { assistantMessageId: summary.responseMessageId }) });
       if (requestContext.suppressPageEvents) return null;
       return {
         requestId: requestContext.requestId,
@@ -1645,10 +1683,11 @@ function createPassiveDeepSeekStreamState(
         promptOptions: requestContext.promptOptions,
       };
     },
-    cancel() {
+    cancel(reason = 'aborted') {
       if (cancelled || completed) return;
       speedTracker.finish();
       cancelled = true;
+      diagnose({ event: 'stream_failed', reason });
     },
   };
 }
@@ -1667,10 +1706,14 @@ export async function interceptFetchResponse(
   try {
     response = await responsePromise;
   } catch (error) {
+    emitAgentDiagnostic(hookState.onDiagnostic, { event: 'stream_failed', requestId: requestContext.requestId,
+      transport: 'fetch', reason: 'fetch_rejected' });
     notifyTerminal();
     throw error;
   }
   if (!response.body) {
+    emitAgentDiagnostic(hookState.onDiagnostic, { event: 'stream_failed', requestId: requestContext.requestId,
+      transport: 'fetch', reason: 'empty_body' });
     notifyTerminal();
     return response;
   }
@@ -1679,7 +1722,7 @@ export async function interceptFetchResponse(
   const decoder = new TextDecoder();
   let streamState: PassiveDeepSeekStreamState | null = null;
   const getStreamState = () => {
-    streamState ??= createPassiveDeepSeekStreamState(requestContext);
+    streamState ??= createPassiveDeepSeekStreamState(requestContext, 'fetch');
     return streamState;
   };
   let cancelled = false;
@@ -1725,7 +1768,9 @@ export async function interceptFetchResponse(
           }
         } catch (error) {
           cancelled = true;
-          streamState?.cancel();
+          if (streamState) streamState.cancel('stream_error');
+          else emitAgentDiagnostic(hookState.onDiagnostic, { event: 'stream_failed', requestId: requestContext.requestId,
+            transport: 'fetch', reason: 'stream_error' });
           try {
             await reader.cancel(error);
           } finally {
@@ -1797,7 +1842,7 @@ function setupXHRResponseInterceptor(
 ): () => void {
   let lastLen = 0;
   let filteredResponse = "";
-  const streamState = createPassiveDeepSeekStreamState(requestContext);
+  const streamState = createPassiveDeepSeekStreamState(requestContext, 'xhr');
   let responseFinished = false;
 
   let terminalSent = false;
@@ -1858,8 +1903,8 @@ function setupXHRResponseInterceptor(
     },
     { once: true },
   );
-  const notifyFailure = () => {
-    streamState.cancel();
+  const notifyFailure = (event?: Event) => {
+    streamState.cancel(event?.type === 'abort' ? 'aborted' : event?.type === 'timeout' ? 'timeout' : 'stream_error');
     notifyTerminal();
   };
   xhr.addEventListener("abort", notifyFailure, { once: true });

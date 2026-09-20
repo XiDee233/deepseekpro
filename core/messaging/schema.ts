@@ -4,6 +4,7 @@ import {
   isToolDescriptorRecord,
 } from './tool-record-codec';
 import { isDeepSeekAugmentableWebRoute } from '../deepseek/request-codec';
+import { decodeAgentDiagnosticPayload } from '../diagnostics/agent-contract';
 
 export const BRIDGE_READY_TYPE = 'DPP_BRIDGE_READY';
 
@@ -18,6 +19,7 @@ export const BRIDGE_MESSAGE_TYPES = [
   'TOOL_CALL',
   'RESTORE_TOOL_CALLS',
   'RESPONSE_COMPLETE',
+  'RESPONSE_DIAGNOSTIC',
   'REQUEST_TERMINAL',
   'RESPONSE_TOKEN_SPEED',
   'MEMORIES_USED',
@@ -48,6 +50,7 @@ export const BRIDGE_TYPE_SOURCES = {
   TOOL_CALL: BRIDGE_SOURCES.mainWorld,
   RESTORE_TOOL_CALLS: BRIDGE_SOURCES.mainWorld,
   RESPONSE_COMPLETE: BRIDGE_SOURCES.mainWorld,
+  RESPONSE_DIAGNOSTIC: BRIDGE_SOURCES.mainWorld,
   REQUEST_TERMINAL: BRIDGE_SOURCES.mainWorld,
   RESPONSE_TOKEN_SPEED: BRIDGE_SOURCES.mainWorld,
   MEMORIES_USED: BRIDGE_SOURCES.mainWorld,
@@ -236,6 +239,15 @@ const BRIDGE_PAYLOAD_VALIDATORS: Record<
     Array.isArray(message.records) && message.records.every(isToolCallRestoreRecord)
   ),
   RESPONSE_COMPLETE: (message) => isResponseCompletePayload(message.payload),
+  RESPONSE_DIAGNOSTIC: (message) => {
+    try {
+      const value = decodeAgentDiagnosticPayload(message.payload);
+      return ['stream_started', 'stream_summary', 'stream_failed', 'tool_parsed'].includes(value.event)
+        && value.stage === 'interceptor';
+    } catch {
+      return false;
+    }
+  },
   REQUEST_TERMINAL: (message) => (
     isPlainRecord(message.payload) && isNonEmptyString(message.payload.requestId)
   ),

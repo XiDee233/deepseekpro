@@ -18,10 +18,12 @@ describe('response-owned tool notifications', () => {
   const onToolCall = vi.fn<(call: ToolCall) => void>();
   const onToolCallStarted = vi.fn<(call: ToolCall) => void>();
   const onToolCallChunk = vi.fn();
+  const onDiagnostic = vi.fn();
 
   beforeEach(() => {
     vi.clearAllMocks();
     updateHookState({
+      onDiagnostic,
       toolDescriptors: descriptors,
       onToolCall,
       onToolCallStarted,
@@ -52,6 +54,21 @@ describe('response-owned tool notifications', () => {
     );
     await wrapped.text();
   }
+
+  it('diagnoses unrecognized DSML calls without changing parsing or leaking arguments', async () => {
+    await deliver('<｜DSML｜calls>' + legacyInvoke.replaceAll('legacy.txt', 'private-path') + '</｜DSML｜calls>');
+    expect(onToolCall).not.toHaveBeenCalled();
+    expect(onDiagnostic).toHaveBeenCalledWith(expect.objectContaining({ event: 'stream_summary',
+      requestId: 'request-tools', toolCount: 0, dsmlCalls: 1, dsmlInvokes: 1, visibleDsmlMarkers: 8 }));
+    expect(JSON.stringify(onDiagnostic.mock.calls)).not.toContain('private-path');
+  });
+
+  it('correlates parsed tools and malformed payloads with the owning response', async () => {
+    await deliver('<artifact_create>not-json</artifact_create>');
+    expect(onDiagnostic).toHaveBeenCalledWith(expect.objectContaining({ event: 'tool_parsed',
+      requestId: 'request-tools', toolCallId: onToolCall.mock.calls[0][0].id, reason: 'parse_rejected', ok: false }));
+    expect(onDiagnostic).toHaveBeenCalledWith(expect.objectContaining({ event: 'stream_summary', parseErrorCount: 1 }));
+  });
 
   it.each([5, 3000, 65000])('preserves identical occurrences with %i-character content', async (length) => {
     const call = xml('a.txt', 'a'.repeat(length));

@@ -4,6 +4,9 @@ This directory is the compatibility firewall for the `core-refactor-2026-07` run
 
 ## Registry Map
 
+[Agent diagnostics](./agent-diagnostics.md) defines the metadata-only observation
+and export contract for response parsing, tool dispatch and continuation decisions.
+
 | Surface | Registry | Follow-up executable freeze |
 |:--|:--|:--|
 | Prompt bytes, tool XML, inline agent, automation execution, runtime messages, MAIN/content bridge, sandbox | [Prompt and Runtime](./prompt-and-runtime.md) and [Runtime Command Inventory](./runtime-command-inventory.md) | T1.2 / [#312](https://github.com/zhu1090093659/deepseek-pp/issues/312), T1.3 / [#313](https://github.com/zhu1090093659/deepseek-pp/issues/313), T2.6 / [#321](https://github.com/zhu1090093659/deepseek-pp/issues/321) |

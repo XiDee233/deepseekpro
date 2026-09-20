@@ -16,6 +16,7 @@ import type {
 } from '../usage/types';
 import type { ScenarioRuntimeRequest } from '../scenario/runtime-request-codec';
 import type { ScenarioConfig } from '../types';
+import type { AgentDiagnosticPayload } from '../diagnostics/agent-contract';
 
 type DeclaredRuntimeRequest<TType extends MessageAction['type']> = Extract<
   MessageAction,
@@ -51,9 +52,13 @@ type SyncOperationSuccess = {
 };
 
 export interface BackgroundRuntimeCommandContracts {
+  RECORD_AGENT_DIAGNOSTIC: {
+    request: { type: 'RECORD_AGENT_DIAGNOSTIC'; payload: AgentDiagnosticPayload };
+    response: Ack;
+  };
   EXPORT_DIAGNOSTIC_LOGS: {
     request: { type: 'EXPORT_DIAGNOSTIC_LOGS' };
-    response: { exportedAt: string; extensionVersion: string; entries: readonly unknown[] };
+    response: { exportedAt: string; extensionVersion: string; buildId: string; entries: readonly unknown[] };
   };
   RECORD_USAGE_TURN: {
     request: DeclaredRuntimeRequest<'RECORD_USAGE_TURN'>;

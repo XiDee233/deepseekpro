@@ -1,150 +1,81 @@
-/**
- * Assistant-message anchoring for inline-agent UI (Issue #551 follow-up).
- *
- * A fresh agent run must mount its console into the NEWEST matching assistant
- * message, and matching must look only at the message's own visible text.
- * Two failure modes are guarded here:
- *
- * 1. Extension-injected UI (agent console timeline, final-answer area, tool
- *    blocks) lives inside the host message, so naive `textContent` matching
- *    let a message that already hosts a console match nearly every follow-up
- *    run — the new console then mounted under the PREVIOUS run's message.
- * 2. First-match-wins scanning preferred the oldest message; a new run's
- *    anchor is always the most recent one.
- */
+/** Message identity belongs to its native envelope, never generated markdown. */
+export const ASSISTANT_MESSAGE_ID_ATTRIBUTES = [
+  'data-message-id', 'data-messageid', 'data-ds-message-id', 'data-id',
+  'data-virtual-list-item-key', 'id',
+] as const;
 
-/**
- * Selector for extension-owned UI injected into assistant messages. Text
- * under these nodes is renderer output, never message content.
- */
-export const EXTENSION_INJECTED_MESSAGE_UI_SELECTOR =
-  '.dpp-agent-container, [data-dpp-body-text], .dpp-tool-block, .dpp-agent-autosave-note';
+export interface AssistantMessageIdentity {
+  id: string;
+  source: 'message_attribute' | 'virtual_item_key';
+}
 
-/**
- * The message's own visible text with every extension-injected UI subtree
- * excluded, so content-snippet anchoring can never be poisoned by our own
- * rendered console/answer/tool text.
- */
-export function getAssistantMessageOwnText(message: Element): string {
-  const parts: string[] = [];
-  const walk = (node: Node): void => {
-    if (node.nodeType === Node.TEXT_NODE) {
-      parts.push(node.textContent ?? '');
-      return;
+function readEnvelopeIds(element: Element): AssistantMessageIdentity[] {
+  const result: AssistantMessageIdentity[] = [];
+  for (const attribute of ASSISTANT_MESSAGE_ID_ATTRIBUTES) {
+    const raw = element.getAttribute(attribute);
+    if (!raw) continue;
+    const value = attribute === 'id' || attribute === 'data-id'
+      ? /^(?:(?:ds-message|message|msg)[-_])?([1-9]\d*)$/.exec(raw)?.[1] : raw;
+    if (value && /^[1-9]\d*$/.test(value) && Number.isSafeInteger(Number(value))) {
+      result.push({ id: value, source: attribute === 'data-virtual-list-item-key'
+        ? 'virtual_item_key' : 'message_attribute' });
     }
-    if (node.nodeType !== Node.ELEMENT_NODE) return;
-    const element = node as HTMLElement;
-    if (element.matches(EXTENSION_INJECTED_MESSAGE_UI_SELECTOR)) return;
-    for (const child of Array.from(element.childNodes)) walk(child);
-  };
-  walk(message);
-  return parts.join(' ');
-}
-
-function normalizeAnchorText(value: string | undefined): string {
-  return (value ?? '').replace(/\s+/g, '').trim();
-}
-
-/**
- * Find the newest assistant message whose own text contains the content
- * snippet. `usedMessages` are skipped entirely (e.g. messages already claimed
- * by a previous run's console or an earlier restored trace).
- */
-export function findAssistantMessageByContentSnippet(
-  messages: Element[],
-  content: string,
-  usedMessages: Set<Element>,
-): Element | null {
-  const snippet = normalizeAnchorText(content).slice(0, 100);
-  if (snippet.length < 12) return null;
-
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
-    if (usedMessages.has(message)) continue;
-    if (normalizeAnchorText(getAssistantMessageOwnText(message)).includes(snippet)) return message;
   }
-  return null;
+  return result;
 }
 
-/**
- * True when the element or one of its descendants exposes the given DeepSeek
- * message id through a data attribute or an id suffix.
- *
- * Attribute values match only as a whole token (`value === messageId`) or as
- * a `-`/`_`-separated suffix (`...-18`). A bare `endsWith` suffix match was a
- * false-positive vector for numeric ids (looking up `34` matched `…-234` on an
- * unrelated message and could anchor a console under the wrong reply).
- */
-export function elementHasMessageId(element: Element, messageId: string): boolean {
-  const candidates = [
-    element,
-    ...Array.from(element.querySelectorAll('[data-message-id], [data-messageid], [data-id], [data-ds-message-id], [id]')),
-  ];
-
-  return candidates.some((candidate) => {
-    const attributes = [
-      candidate.getAttribute('data-message-id'),
-      candidate.getAttribute('data-messageid'),
-      candidate.getAttribute('data-id'),
-      candidate.getAttribute('data-ds-message-id'),
-      candidate.getAttribute('id'),
-    ];
-    const suffixPattern = new RegExp(
-      `(?:^|[-_])${escapeRegExp(messageId)}$`,
-    );
-    return attributes.some((value) => value === messageId || (value !== null && suffixPattern.test(value)));
-  });
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-export interface InlineAgentRestoreAnchor {
-  readonly anchorMessageId: string;
-  readonly anchorContent: string;
-}
-
-/**
- * Virtual-window-safe restore targeting for persisted agent traces (Issue
- * #551 follow-up, restored-console mis-anchor fix).
- *
- * DeepSeek renders chat history through a virtual list, so `messages` is only
- * the currently rendered window and array positions are window-relative: an
- * index captured at run time (`anchorMessageIndex`) or a global assistant
- * ordinal from history metadata (`assistantMessageIndex`) points at the WRONG
- * message once the window moves. Restored consoles anchored through such
- * indices mounted under unrelated newer messages — a restored run's console
- * appeared inside the newest reply.
- *
- * Anchoring therefore trusts only identity signals: the DOM message id and
- * the message's own visible text (plus the own text of persisted tool records
- * from the same anchor message). When the anchor message is not rendered the
- * function returns null and the trace stays pending; the mutation-driven
- * re-render mounts it as soon as its message scrolls into view. No mount is
- * always better than a wrong mount.
- */
-export function findInlineAgentRestoreTarget(
-  anchor: InlineAgentRestoreAnchor,
-  toolContentHints: readonly string[],
-  messages: Element[],
-  usedMessages: Set<Element>,
-): Element | null {
-  if (anchor.anchorMessageId) {
-    const byId = messages.find((message) => {
-      if (usedMessages.has(message)) return false;
-      return elementHasMessageId(message, anchor.anchorMessageId);
-    });
-    if (byId) return byId;
+export function readAssistantMessageIdentity(message: Element): AssistantMessageIdentity | null {
+  const identities = readEnvelopeIds(message);
+  const row = message.parentElement;
+  // Only this message's owning virtual-list row. No arbitrary ancestors or
+  // descendants: Mermaid/code ids such as flowchart-WB1-12 are not message ids.
+  if (row?.hasAttribute('data-virtual-list-item-key')
+    && row.querySelectorAll('.ds-message').length === 1
+    && row.querySelector('.ds-message') === message) {
+    identities.push(...readEnvelopeIds(row));
   }
+  if (!identities.length || new Set(identities.map(({ id }) => id)).size !== 1) return null;
+  return identities[0];
+}
 
-  const byContent = findAssistantMessageByContentSnippet(messages, anchor.anchorContent, usedMessages);
-  if (byContent) return byContent;
+export function elementHasMessageId(message: Element, messageId: string): boolean {
+  return readAssistantMessageIdentity(message)?.id === messageId;
+}
 
-  for (const hint of toolContentHints) {
-    const byHint = findAssistantMessageByContentSnippet(messages, hint, usedMessages);
-    if (byHint) return byHint;
-  }
+export interface InlineAgentTargetDecision {
+  target: Element | null;
+  reason: 'anchor_matched' | 'anchor_missing' | 'anchor_ambiguous' | 'anchor_claimed';
+  source?: AssistantMessageIdentity['source'];
+  candidateCount: number;
+}
 
-  return null;
+/** Single locator for live and restored runs. Missing identity waits. */
+export function resolveInlineAgentTarget(
+  anchorMessageId: number, messages: readonly Element[], claimed: ReadonlySet<Element>,
+): InlineAgentTargetDecision {
+  const matches = messages.filter((message) => elementHasMessageId(message, String(anchorMessageId)));
+  if (matches.length !== 1) return { target: null,
+    reason: matches.length > 1 ? 'anchor_ambiguous' : 'anchor_missing', candidateCount: matches.length };
+  if (claimed.has(matches[0])) return { target: null, reason: 'anchor_claimed', candidateCount: 1 };
+  return { target: matches[0], reason: 'anchor_matched', candidateCount: 1,
+    source: readAssistantMessageIdentity(matches[0])!.source };
+}
+
+/** Revalidate the binding immediately before DOM mutation. */
+export function placeInlineAgentContainer(
+  anchorMessageId: number, message: Element, responseHost: Element, container: HTMLElement,
+): 'mounted' | 'unchanged' | 'identity_changed' {
+  if (!elementHasMessageId(message, String(anchorMessageId))
+    || (responseHost !== message && !message.contains(responseHost))) return 'identity_changed';
+  if (container.parentElement === responseHost && !container.nextSibling) return 'unchanged';
+  responseHost.appendChild(container);
+  return 'mounted';
+}
+
+export function isAssistantMessageIdentityMutation(mutation: MutationRecord): boolean {
+  if (mutation.type !== 'attributes' || !mutation.attributeName
+    || !ASSISTANT_MESSAGE_ID_ATTRIBUTES.includes(mutation.attributeName as typeof ASSISTANT_MESSAGE_ID_ATTRIBUTES[number])) return false;
+  const target = mutation.target;
+  return target instanceof Element && (target.matches('.ds-message')
+    || Boolean(target.querySelector(':scope > .ds-message')));
 }

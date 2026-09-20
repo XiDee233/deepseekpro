@@ -1,17 +1,24 @@
 export const RUNTIME_TOPOLOGY = {
-  liveCommands: 131,
+  liveCommands: 132,
   declaredActions: 100,
   shared: 98,
-  liveOnly: 33,
+  liveOnly: 34,
   declaredOnly: 2,
-  readsPayload: 86,
+  readsPayload: 87,
   ignoresPayload: 45,
   directPayloadCasts: 0,
-  decodedPayloads: 86,
+  decodedPayloads: 87,
   delegatedPayloads: 0,
 } as const;
 
 export const RUNTIME_REQUEST_FIXTURES = [
+  {
+    name: 'bounded metadata-only diagnostic event', family: 'required',
+    message: { type: 'RECORD_AGENT_DIAGNOSTIC', payload: {
+      event: 'continuation_decision', reason: 'no_continuable_tools',
+      buildId: 'test-build', observedAt: 1, requestId: 'request-contract-1',
+    } },
+  },
   {
     name: 'command without payload',
     family: 'none',

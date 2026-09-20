@@ -5,6 +5,7 @@ import {
   type ResponseTokenSpeedPayload,
 } from '../core/interceptor/fetch-hook';
 import { initSkillPopup, stopSkillPopup } from '../core/ui/skill-popup';
+import { stampAgentDiagnostic } from '../core/diagnostics/agent-reporter';
 import type {
   ToolCall,
   ToolCallRestoreRecord,
@@ -48,6 +49,9 @@ export default defineContentScript({
       },
     });
     updateHookState({
+      onDiagnostic(event) {
+        bridge.post({ type: 'RESPONSE_DIAGNOSTIC', payload: stampAgentDiagnostic({ ...event, stage: 'interceptor' }) });
+      },
       onRequestBody(body, requestId, route) {
         return bridge.requestAugmentedBody(body, requestId, route);
       },

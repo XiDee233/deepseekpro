@@ -37,6 +37,7 @@ const CUTOVER_LEDGER_SECTIONS = [
   ['R4.2 / #361 — MCP, tool, browser control, and sandbox (32)', 32],
   ['R4.3 / #362 — DeepSeek, chat, multimodal, and export (16)', 16],
   ['R4.4 / #363 — Sync, automation, usage, scenario, and lifecycle closure (18)', 18],
+  ['Diagnostic observability additions (1)', 1],
 ] as const;
 
 describe('runtime command compatibility contract', () => {
@@ -81,10 +82,10 @@ describe('runtime command compatibility contract', () => {
       expect(commands, heading).toHaveLength(count);
       return commands;
     });
-    expect(cutoverLedger).toHaveLength(131);
+    expect(cutoverLedger).toHaveLength(132);
     expect(new Set(cutoverLedger).size).toBe(cutoverLedger.length);
     expectSortedEqual(cutoverLedger, live);
-    expect(registryEntries).toHaveLength(133);
+    expect(registryEntries).toHaveLength(134);
     for (const contract of liveContracts) {
       const registered = RUNTIME_COMMAND_CONTRACTS[contract.type as keyof typeof RUNTIME_COMMAND_CONTRACTS];
       expect(registered.owner).toBe(getRuntimeCommandOwner(contract.type));

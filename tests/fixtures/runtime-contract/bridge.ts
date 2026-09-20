@@ -47,6 +47,13 @@ const STARTED_TOOL_CALL = {
 };
 
 export const LEGAL_BRIDGE_CASES = {
+  RESPONSE_DIAGNOSTIC: [{
+    name: 'MAIN reports bounded response metadata', expectedSource: MAIN,
+    message: { source: MAIN, type: 'RESPONSE_DIAGNOSTIC', payload: {
+      event: 'stream_summary', stage: 'interceptor', requestId: 'request-contract-1',
+      buildId: 'test-build', observedAt: 1, toolCount: 0, dsmlCalls: 1,
+    } },
+  }],
   SYNC_HOOK_STATE: [{
     name: 'content synchronizes hook state',
     expectedSource: CONTENT,
@@ -278,6 +285,12 @@ type MalformedBridgePayloadCases = {
 };
 
 export const MALFORMED_BRIDGE_PAYLOAD_CASES = {
+  RESPONSE_DIAGNOSTIC: [{
+    name: 'diagnostics reject raw response bodies', expectedSource: MAIN,
+    message: { source: MAIN, type: 'RESPONSE_DIAGNOSTIC', payload: {
+      event: 'stream_summary', stage: 'interceptor', buildId: 'test-build', observedAt: 1, text: 'secret',
+    } }, target: 'reject-at-T2.1-boundary',
+  }],
   SYNC_HOOK_STATE: [{
     name: 'hook state has invalid descriptor and Skill collections',
     expectedSource: CONTENT,

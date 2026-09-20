@@ -17,6 +17,7 @@ import {
 } from './externalized-payload';
 import { isToolCallRecord } from '../messaging/tool-record-codec';
 import { diagnosticLogBuffer } from '../diagnostics/log-buffer';
+import { toolDiagnosticMetadata } from '../diagnostics/tool-metadata';
 import {
   authorizeToolExecution,
   completeToolExecutionAuthorization,
@@ -127,6 +128,7 @@ async function executeRuntimeToolCall(
   capabilityInvocationResolver?: RuntimeCapabilityInvocationResolver,
 ): Promise<ToolResult> {
   assertRuntimeExecutionActive(options);
+  const diagnosticStartedAt = Date.now();
   const identifiedCall = !call.id && options.idempotencyKey
     ? { ...call, id: options.idempotencyKey }
     : call;
@@ -135,7 +137,6 @@ async function executeRuntimeToolCall(
       level: 'warn',
       source: 'tool-runtime',
       message: 'tool call payload rejected',
-      details: String(identifiedCall?.name ?? 'unknown'),
     });
     return createInvalidToolCallResult(identifiedCall, locale);
   }
@@ -146,9 +147,12 @@ async function executeRuntimeToolCall(
     level: 'info',
     source: 'tool-runtime',
     message: `tool start: ${identifiedCall.name}`,
+    details: toolDiagnosticMetadata(identifiedCall),
   });
   if (identifiedCall.parseError) {
     const result = createParseErrorToolResult(identifiedCall, locale);
+    diagnosticLogBuffer.record({ level: 'warn', source: 'tool-runtime', message: 'tool parse rejected',
+      details: toolDiagnosticMetadata(identifiedCall, result, Date.now() - diagnosticStartedAt) });
     await appendAuthorizedFailureHistory(identifiedCall, result, context);
     return result;
   }
@@ -176,7 +180,7 @@ async function executeRuntimeToolCall(
       level: 'warn',
       source: 'tool-runtime',
       message: `tool authorization denied: ${identifiedCall.name}`,
-      details: `${error.code}: ${error.message}`,
+      details: toolDiagnosticMetadata(identifiedCall, result, Date.now() - diagnosticStartedAt),
     });
     await appendAuthorizedFailureHistory(identifiedCall, result, context);
     return result;
@@ -241,7 +245,7 @@ async function executeRuntimeToolCall(
       level: 'error',
       source: 'tool-runtime',
       message: `tool execution failed: ${resolvedCall.name}`,
-      details: error instanceof Error ? error.message : String(error),
+      details: toolDiagnosticMetadata(resolvedCall, undefined, Date.now() - diagnosticStartedAt, error),
     });
     await completeAuthorizationAfterProvider(authorized.reservation);
     throw error;
@@ -250,6 +254,8 @@ async function executeRuntimeToolCall(
   try {
     await appendRuntimeToolHistory(resolvedCall, result, authorized.trigger);
   } catch (error) {
+    diagnosticLogBuffer.record({ level: 'error', source: 'tool-runtime', message: 'tool history write failed',
+      details: toolDiagnosticMetadata(resolvedCall, result, Date.now() - diagnosticStartedAt) });
     if (providerCompleted) throw new ToolPostEffectPersistenceError(error);
     throw error;
   }
@@ -258,15 +264,9 @@ async function executeRuntimeToolCall(
     level: result.ok ? 'info' : 'warn',
     source: 'tool-runtime',
     message: `tool finished: ${result.name ?? resolvedCall.name} (${result.ok ? 'ok' : 'error'})`,
-    details: summarizeToolResult(result),
+    details: toolDiagnosticMetadata(resolvedCall, result, Date.now() - diagnosticStartedAt),
   });
   return result;
-}
-
-function summarizeToolResult(result: ToolResult): string {
-  const parts = [result.summary];
-  if (result.detail) parts.push(result.detail.slice(0, 500));
-  return parts.join(' | ').slice(0, 600);
 }
 
 export function createInvalidToolCallResult(

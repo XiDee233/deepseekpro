@@ -17,6 +17,10 @@ import type {
   ToolExecutionRecord,
 } from "../core/types";
 import { getDeepSeekApiKey } from "../core/chat/api-key";
+import { createAgentDiagnosticReporter, deliverAgentDiagnostic } from "../core/diagnostics/agent-reporter";
+import { decodeAgentDiagnosticPayload, type AgentDiagnosticEvent, type AgentDiagnosticReason } from "../core/diagnostics/agent-contract";
+// Logging must not run the normal RPC invalidation/recovery path on failure.
+const reportAgentDiagnostic = createAgentDiagnosticReporter((message) => chrome.runtime.sendMessage(message));
 import { normalizePetConfig } from "../core/pet/config";
 import { pickPetLine, type PetState } from "../core/pet/lines";
 import { createToolInvocationCatalog } from "../core/tool/invocation";
@@ -80,6 +84,7 @@ import { createUsageProgressWriteCoordinator } from "../core/usage/progress-writ
 import { runInlineAgentLoop } from "../core/inline-agent/loop";
 import { waitForInlineAgentLiveTarget } from "../core/inline-agent/live-target-wait";
 import {
+  getInlineAgentNativeHistoryResponseId,
   isInlineAgentNativeHistoryBackedTrace,
   shouldReloadInlineAgentNativeHistory,
   type InlineAgentModelBackend,
@@ -103,8 +108,10 @@ import {
 } from "../core/inline-agent/display-text";
 import {
   elementHasMessageId,
-  findAssistantMessageByContentSnippet,
-  findInlineAgentRestoreTarget,
+  resolveInlineAgentTarget,
+  placeInlineAgentContainer,
+  readAssistantMessageIdentity,
+  ASSISTANT_MESSAGE_ID_ATTRIBUTES,
 } from "../core/inline-agent/message-anchor";
 import type {
   InlineAgentStartPayload,
@@ -519,7 +526,7 @@ const petRecentLines: string[] = [];
 let inlineAgentContainer: HTMLElement | null = null;
 let inlineAgentCurrentStep: HTMLElement | null = null;
 let inlineAgentLoopId: string | null = null;
-let inlineAgentContainerObserver: MutationObserver | null = null;
+const agentAnchorDiagnosticStates = new Map<string, string>();
 let renderedToolCallCleanerFrame: number | null = null;
 let activeInlineAgentTrace: InlineAgentTraceRecord | null = null;
 let inlineAgentTraceWriteTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1105,6 +1112,7 @@ function startInlineAgentCapability(
   mutationHub: ContentMutationHub,
 ): void {
   inlineAgentCapabilityScope = scope;
+  reportAgentDiagnostic({ event: 'content_ready', stage: 'content' });
   const epoch = ++inlineAgentCapabilityEpoch;
   startInlineAgentContinuationMessageHider(scope, mutationHub);
   observeReportedPersistence(restorePersistedInlineAgentTraces(scope, epoch));
@@ -1114,7 +1122,7 @@ async function stopInlineAgentCapability(): Promise<void> {
   inlineAgentCapabilityScope = null;
   inlineAgentCapabilityEpoch += 1;
   stopInlineAgentContinuationMessageHider();
-  if (activeAgentAbort || inlineAgentContainer) stopInlineAgent();
+  if (activeAgentAbort || inlineAgentContainer) stopInlineAgent('lifecycle_stop');
   while (pendingInlineAgentLoopTasks.size > 0) {
     await Promise.allSettled([...pendingInlineAgentLoopTasks]);
   }
@@ -1132,6 +1140,7 @@ async function stopInlineAgentCapability(): Promise<void> {
     await Promise.allSettled([...pendingInlineAgentPersistenceOperations]);
   }
   responseGeneration += 1;
+  agentAnchorDiagnosticStates.clear();
   restoredInlineAgentTraces.clear();
   pendingRestoredInlineAgentTraceIds.clear();
   restoredInlineAgentRenderAttempts = 0;
@@ -1276,12 +1285,22 @@ async function dispatchMainWorldMessage(
 ): Promise<void> {
   try {
     switch (data.type) {
+      case "RESPONSE_DIAGNOSTIC": {
+        // The bridge codec already validated this metadata; MAIN remains an
+        // untrusted observer. Preserve its build/time to reveal stale pages.
+        const payload = decodeAgentDiagnosticPayload(data.payload);
+        deliverAgentDiagnostic((message) => chrome.runtime.sendMessage(message), payload);
+        break;
+      }
       case "TOOL_CALL_STARTED": {
         showPendingToolExecution(data.data as ToolCall);
         break;
       }
       case "TOOL_CALL": {
         const call = ensureToolCallId(data.data as ToolCall);
+        reportAgentDiagnostic({ event: 'tool_received', stage: 'content', toolCallId: call.id,
+          requestId: call.source?.requestId, ok: !call.parseError,
+          ...(call.parseError ? { reason: 'parse_rejected' } : {}) });
         setPetState("working");
         void runToolExecution(call);
         break;
@@ -1318,14 +1337,27 @@ async function dispatchMainWorldMessage(
         );
         rememberRegenerateAuthorizationScope(complete);
         const generation = ++responseGeneration;
+        reportAgentDiagnostic({ event: 'response_received', stage: 'content',
+          requestId: complete.requestId, chatSessionId: complete.chatSessionId ?? undefined,
+          assistantMessageId: complete.assistantMessageId ?? undefined,
+          textLength: complete.text.length, pendingToolCount: complete.requestId
+            ? (pendingToolExecutionTasksByRequest.get(complete.requestId)?.size ?? 0)
+            : pendingToolExecutionTasks.size });
         activeStreamingToolCount = 0;
         await waitForPendingToolExecutions(complete.requestId);
         await finalizeInterruptedToolStarts(complete.requestId);
-        if (generation !== responseGeneration) break;
+        if (generation !== responseGeneration) {
+          reportAgentDiagnostic({ event: 'continuation_decision', stage: 'content',
+            requestId: complete.requestId, reason: 'response_superseded' });
+          break;
+        }
         const session = getActiveToolBlockSessionForComplete(complete);
         const completedExecutions = session
           ? [...session.executions]
           : [...toolExecutions];
+        reportAgentDiagnostic({ event: 'response_tools_settled', stage: 'content', requestId: complete.requestId,
+          toolCount: completedExecutions.length,
+          failedToolCount: completedExecutions.filter((execution) => !execution.result.ok).length });
         if (session && session.executions.length > 0) {
           await persistToolBlockSession(session, complete.text, complete);
           const renderedBlock =
@@ -4471,7 +4503,16 @@ async function startInlineAgentIfNeeded(
   complete: ResponseCompletePayload,
   executions: ToolExecutionRecord[],
 ): Promise<void> {
-  if (isInlineAgentResponseComplete(complete)) return;
+  const diagnoseDecision = (reason: AgentDiagnosticReason, extra: Partial<AgentDiagnosticEvent> = {}) => {
+    reportAgentDiagnostic({ event: 'continuation_decision', stage: 'content', reason,
+      requestId: complete.requestId, chatSessionId: complete.chatSessionId ?? undefined,
+      assistantMessageId: complete.assistantMessageId ?? undefined,
+      toolCount: executions.length, textLength: complete.text.length, ...extra });
+  };
+  if (isInlineAgentResponseComplete(complete)) {
+    diagnoseDecision('internal_response');
+    return;
+  }
 
   // Concurrency guard (issue #298): if an inline agent loop is already running
   // for this conversation, do NOT start a second one off a user-initiated turn
@@ -4480,6 +4521,7 @@ async function startInlineAgentIfNeeded(
   // Continuation turns are produced by the agent loop itself and are already
   // handled by isInlineAgentResponseComplete above.
   if (isInlineAgentRunning()) {
+    diagnoseDecision('already_running');
     showContentToast(contentT("content.agent.concurrencyGuard"), "warning");
     return;
   }
@@ -4487,14 +4529,21 @@ async function startInlineAgentIfNeeded(
   // Collect executions that should trigger a continuation:
   // MCP tools + local web and browser-control tools.
   const continuableExecutions = selectContinuableToolExecutions(executions);
-  if (continuableExecutions.length === 0) return;
-  if (!complete.chatSessionId || complete.assistantMessageId == null) return;
+  if (continuableExecutions.length === 0) {
+    diagnoseDecision('no_continuable_tools', { continuableToolCount: 0 });
+    return;
+  }
+  if (!complete.chatSessionId || complete.assistantMessageId == null) {
+    diagnoseDecision('missing_chain', { continuableToolCount: continuableExecutions.length });
+    return;
+  }
 
   const loopId = crypto.randomUUID();
   const authorization = complete.requestId
     ? activeToolAuthorizations.get(complete.requestId)
     : undefined;
   if (!authorization) {
+    diagnoseDecision('missing_authorization', { loopId });
     // Don't fail silently: the user asked for agent work and the loop cannot
     // start without the tool authorization grant (Issue #544).
     showContentToast(contentT("content.agent.startFailed"), "warning");
@@ -4531,6 +4580,7 @@ async function startInlineAgentIfNeeded(
   const scope = inlineAgentCapabilityScope;
   const observationRoot = document.getElementById("root") ?? document.body;
   if (!scope?.active || !observationRoot) {
+    diagnoseDecision('inactive_document', { loopId });
     showContentToast(contentT("content.agent.startFailed"), "warning");
     return;
   }
@@ -4540,7 +4590,7 @@ async function startInlineAgentIfNeeded(
       const target = findInlineAgentLiveTarget(
         complete,
         messages,
-        anchorContent,
+        loopId,
       );
       return target ? { target, messages } : null;
     },
@@ -4549,6 +4599,8 @@ async function startInlineAgentIfNeeded(
       const release = scope.observe(observer, observationRoot, {
         childList: true,
         subtree: true,
+        attributes: true,
+        attributeFilter: [...ASSISTANT_MESSAGE_ID_ATTRIBUTES],
       });
       return () => {
         void release();
@@ -4560,6 +4612,7 @@ async function startInlineAgentIfNeeded(
     timeoutMs: INLINE_AGENT_LIVE_TARGET_WAIT_MS,
   });
   if (!located || inlineAgentCapabilityScope !== scope || !scope.active) {
+    diagnoseDecision('anchor_unavailable', { loopId });
     // Don't fail silently after the bounded DOM commit wait: the anchor
     // assistant message really could not be located (Issue #544).
     if (scope.active)
@@ -4585,7 +4638,7 @@ async function startInlineAgentIfNeeded(
   // restored console next to the still-present live one (Issue #551
   // follow-up).
   container.setAttribute("data-dpp-agent-trace-key", activeInlineAgentTrace.id);
-  mountInlineAgentContainer(target, container);
+  mountInlineAgentContainer(target, container, activeInlineAgentTrace);
 
   // The agent flow now owns the tool presentation of the run record: the
   // old-style collapsible tool block (and detached artifact cards) of the
@@ -4616,11 +4669,14 @@ async function startInlineAgentIfNeeded(
   container.setAttribute("data-agent-starting", "true");
 
   startAgentConsoleTimer();
+  diagnoseDecision('started', { loopId, continuableToolCount: continuableExecutions.length });
   startOwnedInlineAgentLoop(payload);
 }
 
 function startOwnedInlineAgentLoop(payload: InlineAgentStartPayload): void {
   const task = startInlineAgentLoop(payload).catch((error) => {
+    reportAgentDiagnostic({ event: 'loop_finished', stage: 'content', reason: 'startup_failed',
+      loopId: payload.loopId, requestId: payload.capabilityScopeRequestId });
     console.error("[DeepSeek++] inline agent loop failed", error);
   });
   pendingInlineAgentLoopTasks.add(task);
@@ -4657,27 +4713,60 @@ function adoptMessageReasoningBlocks(message: Element): void {
 function mountInlineAgentContainer(
   message: Element,
   container: HTMLElement,
-): void {
-  const placeContainer = () => {
-    adoptMessageReasoningBlocks(message);
-    const responseHost = getAssistantResponseHost(message);
-    if (container.parentElement !== responseHost) {
-      responseHost.appendChild(container);
-      return;
-    }
-    if (container.nextSibling) {
-      responseHost.appendChild(container);
-    }
-  };
+  trace: Pick<InlineAgentTraceRecord, "loopId" | "anchorMessageId">,
+): boolean {
+  const result = placeInlineAgentContainer(trace.anchorMessageId, message, getAssistantResponseHost(message), container);
+  if (result === "identity_changed") {
+    reportAgentDiagnostic({ event: 'agent_ui_detached', stage: 'content', reason: 'anchor_identity_changed',
+      loopId: trace.loopId, anchorMessageId: trace.anchorMessageId });
+    container.remove();
+    return false;
+  }
+  adoptMessageReasoningBlocks(message);
+  removeToolBlockFromMessage(message);
+  if (result === "mounted") {
+    reportAgentDiagnostic({ event: 'agent_ui_mounted', stage: 'content', loopId: trace.loopId,
+      anchorMessageId: trace.anchorMessageId, matchedMessageId: Number(readAssistantMessageIdentity(message)!.id),
+      restored: container.getAttribute('data-restored') === 'true' });
+  }
+  return true;
+}
 
-  placeContainer();
+function resolveAgentPresentationTarget(
+  trace: Pick<InlineAgentTraceRecord, "loopId" | "anchorMessageId">,
+  messages: Element[],
+  ownContainer?: Element | null,
+): Element | null {
+  const claimed = new Set(messages.filter((message) =>
+    Array.from(message.querySelectorAll('.dpp-agent-container')).some((node) => node !== ownContainer)));
+  const decision = resolveInlineAgentTarget(trace.anchorMessageId, messages, claimed);
+  const key = `${decision.reason}:${decision.source ?? ""}:${decision.candidateCount}`;
+  if (agentAnchorDiagnosticStates.get(trace.loopId) !== key) {
+    agentAnchorDiagnosticStates.set(trace.loopId, key);
+    if (agentAnchorDiagnosticStates.size > 128) {
+      const oldest = agentAnchorDiagnosticStates.keys().next().value;
+      if (oldest !== undefined) agentAnchorDiagnosticStates.delete(oldest);
+    }
+    reportAgentDiagnostic({ event: 'agent_anchor_decision', stage: 'content', loopId: trace.loopId,
+      anchorMessageId: trace.anchorMessageId, reason: decision.reason,
+      anchorSource: decision.source, candidateCount: decision.candidateCount });
+  }
+  return decision.target;
+}
 
-  inlineAgentContainerObserver?.disconnect();
-  inlineAgentContainerObserver = new MutationObserver(placeContainer);
-  inlineAgentContainerObserver.observe(message, {
-    childList: true,
-    subtree: true,
-  });
+function reconcileLiveInlineAgentContainer(): void {
+  const trace = activeInlineAgentTrace;
+  const container = inlineAgentContainer;
+  if (!trace || !container) return;
+  const target = trace.chatSessionId === getCurrentChatSessionId()
+    ? resolveAgentPresentationTarget(trace, getAssistantMessages(), container) : null;
+  if (target) {
+    mountInlineAgentContainer(target, container, trace);
+  } else if (container.parentElement) {
+    container.remove();
+    reportAgentDiagnostic({ event: 'agent_ui_detached', stage: 'content', reason: 'anchor_identity_changed',
+      loopId: trace.loopId, anchorMessageId: trace.anchorMessageId });
+  }
 }
 
 /**
@@ -4702,32 +4791,10 @@ function removeToolBlockFromMessage(message: Element): void {
 function findInlineAgentLiveTarget(
   complete: ResponseCompletePayload,
   messages: Element[],
-  anchorContent: string,
+  loopId: string,
 ): Element | null {
-  const messageId =
-    complete.assistantMessageId == null
-      ? null
-      : String(complete.assistantMessageId);
-  if (messageId) {
-    const byId = messages.find((message) =>
-      elementHasMessageId(message, messageId),
-    );
-    if (byId) return byId;
-  }
-
-  // A message already hosting an agent console belongs to an earlier run; a
-  // fresh run never anchors into it (Issue #551 follow-up).
-  const claimed = new Set(
-    messages.filter((message) => message.querySelector(".dpp-agent-container")),
-  );
-  const byContent = findAssistantMessageByContentSnippet(
-    messages,
-    anchorContent,
-    claimed,
-  );
-  if (byContent) return byContent;
-
-  return messages[messages.length - 1] ?? null;
+  if (complete.assistantMessageId == null) return null;
+  return resolveAgentPresentationTarget({ loopId, anchorMessageId: complete.assistantMessageId }, messages);
 }
 
 /**
@@ -4761,11 +4828,13 @@ function teardownInlineAgentPanel(): void {
   inlineAgentCurrentStep = null;
   activeInlineAgentTrace = null;
   activeAgentModelBackend = null;
-  inlineAgentContainerObserver?.disconnect();
-  inlineAgentContainerObserver = null;
+
+
 }
 
-function stopInlineAgent(): void {
+function stopInlineAgent(reason: 'user_stop' | 'lifecycle_stop' = 'user_stop'): void {
+  reportAgentDiagnostic({ event: 'loop_stop_requested', stage: 'content', reason,
+    loopId: inlineAgentLoopId ?? undefined });
   stopAgentConsoleTimer();
   removeAgentStartingElement();
   const container = inlineAgentContainer;
@@ -4787,8 +4856,8 @@ function stopInlineAgent(): void {
   inlineAgentCurrentStep = null;
   activeInlineAgentTrace = null;
   activeAgentModelBackend = null;
-  inlineAgentContainerObserver?.disconnect();
-  inlineAgentContainerObserver = null;
+
+
   activeAgentAbort?.abort();
   activeAgentAbort = null;
   if (container) {
@@ -4820,6 +4889,8 @@ async function startInlineAgentLoop(
   // until the aborted stream settled, so two agent panels briefly raced
   // (issue #298).
   if (activeAgentAbort) {
+    reportAgentDiagnostic({ event: 'loop_stop_requested', stage: 'content', reason: 'loop_replaced',
+      loopId: inlineAgentLoopId ?? undefined });
     activeAgentAbort.abort();
     teardownInlineAgentPanel();
   }
@@ -4853,6 +4924,8 @@ async function startInlineAgentLoop(
       totalTools: payload.toolExecutions.length,
       error: error instanceof Error ? error.message : String(error),
     });
+    reportAgentDiagnostic({ event: 'loop_finished', stage: 'content', reason: 'authorization_failed',
+      loopId: payload.loopId, requestId: capabilityScopeRequestId, backend: modelBackend });
     if (activeAgentAbort === abort) {
       activeAgentAbort = null;
       activeAgentModelBackend = null;
@@ -4911,7 +4984,8 @@ async function startInlineAgentLoop(
           ),
         ],
       },
-      { post, executeTool, signal: abort.signal },
+      { post, executeTool, signal: abort.signal,
+        onDiagnostic: (event) => reportAgentDiagnostic({ ...event, stage: 'loop' }) },
     );
     if (terminalTasks.length > 0) {
       const terminalResults = await Promise.all(terminalTasks);
@@ -5260,8 +5334,8 @@ async function handleAgentLoopComplete(
   let completedTrace: InlineAgentTraceRecord | null = null;
   let shouldReloadNativeHistory = false;
   try {
-    inlineAgentContainerObserver?.disconnect();
-    inlineAgentContainerObserver = null;
+
+
 
     // The stream redesign (Issue #551): the final turn is the LAST narration
     // segment of the body stream — there is no separate answer area. The
@@ -5343,8 +5417,8 @@ async function handleAgentLoopComplete(
     inlineAgentContainer = null;
     inlineAgentCurrentStep = null;
     activeInlineAgentTrace = null;
-    inlineAgentContainerObserver?.disconnect();
-    inlineAgentContainerObserver = null;
+
+
   }
 
   if (!completedTrace) return false;
@@ -5440,8 +5514,8 @@ function handleAgentLoopError(msg: InlineAgentLoopErrorMsg): void {
     inlineAgentContainer = null;
     inlineAgentCurrentStep = null;
     activeInlineAgentTrace = null;
-    inlineAgentContainerObserver?.disconnect();
-    inlineAgentContainerObserver = null;
+
+
   }
 }
 
@@ -5971,6 +6045,7 @@ function handleToolBlockRouteChange() {
   toolBlockRouteKey = nextRouteKey;
   restoredToolRecords.clear();
   pendingRestoredToolRecordIds.clear();
+  agentAnchorDiagnosticStates.clear();
   restoredInlineAgentTraces.clear();
   pendingRestoredInlineAgentTraceIds.clear();
   restoredRenderAttempts = 0;
@@ -6933,6 +7008,8 @@ async function executeToolCall(
   authorizationId?: string,
 ): Promise<ToolCardResult> {
   if (call.parseError) {
+    reportAgentDiagnostic({ event: 'tool_dispatch_finished', stage: 'content', reason: 'parse_rejected',
+      requestId: call.source?.requestId, toolCallId: call.id, ok: false });
     return {
       ok: false,
       summary: contentT("tool.runtime.invalidFormat"),
@@ -7914,21 +7991,25 @@ function renderRestoredInlineAgentTraces(): number {
   const messages = getAssistantMessages();
   if (messages.length === 0) return pendingRestoredInlineAgentTraceIds.size;
 
-  // A message already hosting an agent console belongs to an earlier run; a
-  // restored console never anchors into it either (mirrors
-  // findInlineAgentLiveTarget, Issue #551 follow-up).
-  const usedMessages = new Set<Element>(
-    messages.filter((message) => message.querySelector(".dpp-agent-container")),
-  );
-
   for (const id of [...pendingRestoredInlineAgentTraceIds]) {
     const trace = restoredInlineAgentTraces.get(id);
     if (!trace) {
       pendingRestoredInlineAgentTraceIds.delete(id);
       continue;
     }
-    if (findRestoredInlineAgentTrace(trace.id)) {
-      pendingRestoredInlineAgentTraceIds.delete(id);
+    if (trace.loopId === inlineAgentLoopId) continue;
+    const existing = findRestoredInlineAgentTrace(trace.id) as HTMLElement | null;
+    const target = resolveAgentPresentationTarget(trace, messages, existing);
+    if (!target) {
+      if (existing?.parentElement) {
+        existing.remove();
+        reportAgentDiagnostic({ event: 'agent_ui_detached', stage: 'content', reason: 'anchor_identity_changed',
+          loopId: trace.loopId, anchorMessageId: trace.anchorMessageId, restored: true });
+      }
+      continue;
+    }
+    if (existing) {
+      if (mountInlineAgentContainer(target, existing, trace)) pendingRestoredInlineAgentTraceIds.delete(id);
       continue;
     }
     if (trace.steps.length === 0) {
@@ -7936,13 +8017,8 @@ function renderRestoredInlineAgentTraces(): number {
       continue;
     }
 
-    const target = findRestoredInlineAgentTarget(trace, messages, usedMessages);
-    if (!target) continue;
-
     const container = createRestoredInlineAgentContainer(trace);
-    mountRestoredInlineAgentContainer(target, container, trace);
-    usedMessages.add(target);
-    pendingRestoredInlineAgentTraceIds.delete(id);
+    if (mountInlineAgentContainer(target, container, trace)) pendingRestoredInlineAgentTraceIds.delete(id);
   }
 
   return pendingRestoredInlineAgentTraceIds.size;
@@ -7958,32 +8034,6 @@ function findRestoredInlineAgentTrace(id: string): Element | null {
   return null;
 }
 
-function findRestoredInlineAgentTarget(
-  trace: InlineAgentTraceRecord,
-  messages: Element[],
-  usedMessages: Set<Element>,
-): Element | null {
-  // Virtual-window-safe anchoring (Issue #551 follow-up): `messages` is only
-  // the virtual list's rendered window, so index-based fallbacks
-  // (`anchorMessageIndex`, tool-record `assistantMessageIndex`) point at the
-  // WRONG message once the window moves — restored consoles mounted under
-  // unrelated newer replies. Only DOM-id / own-text identity is trusted; when
-  // the anchor message is not rendered this returns null and the trace stays
-  // pending until its message scrolls into view (the mutation hub re-runs
-  // the render). No mount is always better than a wrong mount.
-  const anchorMessageId = String(trace.anchorMessageId);
-  const toolContentHints: string[] = [];
-  for (const record of restoredToolRecords.values()) {
-    if (getToolRecordAssistantMessageId(record) !== anchorMessageId) continue;
-    toolContentHints.push(record.content ?? "");
-  }
-  return findInlineAgentRestoreTarget(
-    { anchorMessageId, anchorContent: trace.anchorContent ?? "" },
-    toolContentHints,
-    messages,
-    usedMessages,
-  );
-}
 
 function createRestoredInlineAgentContainer(
   trace: InlineAgentTraceRecord,
@@ -8108,6 +8158,11 @@ function createRestoredInlineAgentContainer(
   // A restored trace is a finished run: every tool group collapses to its
   // one-line header (Issue #551 redesign).
   collapseAllAgentToolGroups(consoleBody);
+  reportAgentDiagnostic({ event: 'agent_restore_render', stage: 'content', loopId: trace.loopId,
+    anchorMessageId: trace.anchorMessageId,
+    finalResponseMessageId: getInlineAgentNativeHistoryResponseId(trace) ?? undefined,
+    nativeFinalOwned: nativeHistoryOwnsFinalTurn,
+    renderedStepCount: consoleBody.querySelectorAll('.dpp-agent-step').length, restored: true });
 
   const elapsedSeconds = Math.max(
     0,
@@ -8147,19 +8202,6 @@ function createRestoredInlineAgentContainer(
   return container;
 }
 
-function mountRestoredInlineAgentContainer(
-  message: Element,
-  container: HTMLElement,
-  trace: InlineAgentTraceRecord,
-): void {
-  adoptMessageReasoningBlocks(message);
-  // Defense against the restore race (tool-block read may finish before the
-  // trace map is populated): the agent console owns the tool presentation of
-  // its anchor message, so any legacy block mounted there is removed.
-  removeToolBlockFromMessage(message);
-  const host = getAssistantResponseHost(message);
-  host.appendChild(container);
-}
 
 function findRestoredToolBlock(id: string): Element | null {
   for (const block of document.querySelectorAll(
@@ -8636,7 +8678,7 @@ function startInlineAgentContinuationMessageHider(
       matches: (mutations) => {
         if (inlineAgentCapabilityScope !== scope || !scope.active) return false;
         const restoreAction = getRestoredMessageMutationAction(mutations, {
-          hasPendingRecords: pendingRestoredInlineAgentTraceIds.size > 0,
+          hasPendingRecords: pendingRestoredInlineAgentTraceIds.size > 0 || Boolean(activeInlineAgentTrace),
           restoredUiSelector: RESTORED_INLINE_AGENT_UI_SELECTOR,
         });
         return (
@@ -8645,8 +8687,9 @@ function startInlineAgentContinuationMessageHider(
         );
       },
       handle(mutations) {
+        reconcileLiveInlineAgentContainer();
         const restoreAction = getRestoredMessageMutationAction(mutations, {
-          hasPendingRecords: pendingRestoredInlineAgentTraceIds.size > 0,
+          hasPendingRecords: pendingRestoredInlineAgentTraceIds.size > 0 || Boolean(activeInlineAgentTrace),
           restoredUiSelector: RESTORED_INLINE_AGENT_UI_SELECTOR,
         });
         if (restoreAction.requeueMountedRecords)

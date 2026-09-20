@@ -11,6 +11,7 @@
 import { runPiInlineAgentLoop } from './pi/loop-adapter';
 import type { PostFn, ExecuteToolFn } from './pi/loop-adapter';
 import type { InlineAgentStartPayload } from './types';
+import type { AgentDiagnosticSink } from '../diagnostics/agent-contract';
 
 export type { PostFn, ExecuteToolFn };
 
@@ -18,12 +19,13 @@ export interface InlineAgentLoopDeps {
   post: PostFn;
   executeTool: ExecuteToolFn;
   signal: AbortSignal;
+  onDiagnostic?: AgentDiagnosticSink;
 }
 
 export async function runInlineAgentLoop(
   payload: InlineAgentStartPayload,
   deps: InlineAgentLoopDeps,
 ): Promise<void> {
-  const { post, executeTool, signal } = deps;
-  return runPiInlineAgentLoop({ payload, post, executeTool, signal });
+  const { post, executeTool, signal, onDiagnostic } = deps;
+  return runPiInlineAgentLoop({ payload, post, executeTool, signal, onDiagnostic });
 }

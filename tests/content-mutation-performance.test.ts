@@ -62,6 +62,8 @@ describe('Content mutation performance trace', () => {
       childList: true,
       subtree: true,
       characterData: true,
+      attributes: true,
+      attributeFilter: ['data-message-id', 'data-messageid', 'data-ds-message-id', 'data-id', 'data-virtual-list-item-key', 'id'],
     });
 
     await kernel.stop('manual');

@@ -1,197 +1,111 @@
 import { describe, expect, it } from 'vitest';
 import {
-  elementHasMessageId,
-  findAssistantMessageByContentSnippet,
-  findInlineAgentRestoreTarget,
-  getAssistantMessageOwnText,
+  elementHasMessageId, readAssistantMessageIdentity, resolveInlineAgentTarget,
+  placeInlineAgentContainer, isAssistantMessageIdentityMutation,
 } from '../core/inline-agent/message-anchor';
 
-function buildMessage(ownText: string, injected?: string): HTMLElement {
-  const message = document.createElement('div');
-  message.className = 'ds-message';
-  const host = document.createElement('div');
-  host.className = 'ds-markdown';
-  host.textContent = ownText;
-  message.appendChild(host);
-  if (injected) {
-    const console_ = document.createElement('div');
-    console_.className = 'dpp-agent-container';
-    console_.textContent = injected;
-    host.appendChild(console_);
-  }
-  return message;
+function message(id?: string): HTMLElement {
+  const element = document.createElement('div');
+  element.className = 'ds-message';
+  if (id) element.setAttribute('data-message-id', id);
+  element.innerHTML = '<div class="ds-markdown">The same answer text.</div>';
+  return element;
 }
+function row(id: string): { row: HTMLElement; message: HTMLElement } {
+  const owner = document.createElement('div');
+  owner.setAttribute('data-virtual-list-item-key', id);
+  const node = message();
+  owner.append(node);
+  return { row: owner, message: node };
+}
+const resolve = (id: number, messages: Element[]) => resolveInlineAgentTarget(id, messages, new Set());
 
-describe('findAssistantMessageByContentSnippet (Issue #551 follow-up)', () => {
-  const snippet = '用户要求重新绘制 Anthropic ARR 折线图，需要先获取最新数据。';
-
-  it('anchors to the newest matching message, never an older one', () => {
-    const older = buildMessage(`旧轮次：${snippet}`);
-    const newer = buildMessage(`新一轮：${snippet}`);
-    expect(findAssistantMessageByContentSnippet([older, newer], snippet, new Set())).toBe(newer);
+describe('native assistant message identity', () => {
+  it('reads identity only on the message envelope or its owning native row', () => {
+    expect(readAssistantMessageIdentity(message('42'))).toEqual({ id: '42', source: 'message_attribute' });
+    expect(readAssistantMessageIdentity(row('18').message)).toEqual({ id: '18', source: 'virtual_item_key' });
+    const named = message();
+    named.id = 'ds-message-42';
+    expect(elementHasMessageId(named, '42')).toBe(true);
+    expect(elementHasMessageId(named, '2')).toBe(false);
   });
 
-  it('ignores text inside injected agent consoles when matching', () => {
-    // The old run's message contains the snippet only inside its injected
-    // console timeline — it must not claim the new run's anchor.
-    const oldWithConsole = buildMessage('旧轮次回答内容', `Step 1 ${snippet} Step 2`);
-    const freshText = '我先调用工具获取最新的月度数据。';
-    const fresh = buildMessage(freshText);
-    const messages = [oldWithConsole, fresh];
-    expect(
-      findAssistantMessageByContentSnippet(messages, snippet, new Set([fresh])),
-    ).toBeNull();
-    expect(
-      findAssistantMessageByContentSnippet(messages, freshText, new Set()),
-    ).toBe(fresh);
+  it('does not mistake the screenshot Mermaid node ids for an earlier message', () => {
+    const final = row('18').message;
+    final.querySelector('.ds-markdown')!.innerHTML = `
+      <h2>Final answer</h2><svg id="mermaid-svg-0">
+        <g id="flowchart-WB1-12"></g><g id="flowchart-WB3-14"></g>
+        <g id="flowchart-WB6-17"></g></svg>`;
+    for (const id of [12, 14, 17]) {
+      expect(elementHasMessageId(final, String(id))).toBe(false);
+      expect(resolve(id, [final])).toMatchObject({ target: null, reason: 'anchor_missing' });
+    }
+    expect(resolve(18, [final]).target).toBe(final);
   });
 
-  it('skips messages already claimed via usedMessages', () => {
-    const claimed = buildMessage(`旧轮次：${snippet}`);
-    const fresh = buildMessage(`新一轮：${snippet}`);
-    expect(
-      findAssistantMessageByContentSnippet([claimed, fresh], snippet, new Set([claimed])),
-    ).toBe(fresh);
+  it('ignores explicit-looking ids inside generated content and injected UI', () => {
+    const node = message();
+    node.querySelector('.ds-markdown')!.innerHTML = `
+      <div id="ds-message-12" data-message-id="12"></div>
+      <div class="dpp-agent-container" data-id="12"></div>`;
+    expect(resolve(12, [node]).target).toBeNull();
   });
 
-  it('returns null for snippets shorter than 12 normalized chars', () => {
-    const message = buildMessage('短文本');
-    expect(findAssistantMessageByContentSnippet([message], '短文本', new Set())).toBeNull();
-  });
-});
-
-describe('getAssistantMessageOwnText', () => {
-  it('excludes console, final-answer, tool-block, and autosave-note subtrees', () => {
-    const message = buildMessage('消息正文');
-    const host = message.querySelector('.ds-markdown')!;
-    const answer = document.createElement('div');
-    answer.setAttribute('data-dpp-body-text', 'true');
-    answer.textContent = '最终答案区';
-    const toolBlock = document.createElement('div');
-    toolBlock.className = 'dpp-tool-block';
-    toolBlock.textContent = '已调用工具 3 次';
-    const note = document.createElement('div');
-    note.className = 'dpp-agent-autosave-note';
-    note.textContent = '已自动保存';
-    host.append(answer, toolBlock, note);
-
-    const ownText = getAssistantMessageOwnText(message);
-    expect(ownText).toContain('消息正文');
-    expect(ownText).not.toContain('最终答案区');
-    expect(ownText).not.toContain('已调用工具');
-    expect(ownText).not.toContain('已自动保存');
-  });
-});
-
-describe('findInlineAgentRestoreTarget (Issue #551 follow-up: virtual-window-safe restore)', () => {
-  // DeepSeek renders chat through a virtual list: the messages array is only
-  // the currently rendered window. A restored trace whose anchor message is
-  // scrolled out must stay pending — never mount onto an unrelated message
-  // that happens to sit at a colliding window position.
-
-  const oldAnchorText = '旧一轮 agent 运行所在的助手消息正文，包含 Anthropic ARR 月度增长的搜索结果。';
-  const newAnchorText = '用户要的是「重新绘制一版」折线图，我先获取最新数据再渲染。';
-
-  function buildMessageWithId(ownText: string, messageId?: string): HTMLElement {
-    const message = buildMessage(ownText);
-    if (messageId) message.setAttribute('data-message-id', messageId);
-    return message;
-  }
-
-  it('anchors by DOM message id when the anchor message is rendered', () => {
-    const other = buildMessageWithId(newAnchorText, '222');
-    const anchor = buildMessageWithId(oldAnchorText, '111');
-    expect(findInlineAgentRestoreTarget(
-      { anchorMessageId: '111', anchorContent: '' },
-      [],
-      [other, anchor],
-      new Set(),
-    )).toBe(anchor);
+  it('rejects conflicting identity and wrappers owning multiple messages', () => {
+    const conflict = row('18');
+    conflict.message.setAttribute('data-message-id', '12');
+    expect(readAssistantMessageIdentity(conflict.message)).toBeNull();
+    const shared = row('18');
+    shared.row.append(message());
+    expect(readAssistantMessageIdentity(shared.message)).toBeNull();
   });
 
-  it('anchors by anchor content when no id matches', () => {
-    const other = buildMessageWithId(newAnchorText, '222');
-    const anchor = buildMessageWithId(oldAnchorText, '333');
-    expect(findInlineAgentRestoreTarget(
-      { anchorMessageId: '111', anchorContent: oldAnchorText },
-      [],
-      [other, anchor],
-      new Set(),
-    )).toBe(anchor);
+  it('does not use matching text, DOM order or a virtual window index', () => {
+    const newer = row('18').message;
+    expect(resolve(12, [newer])).toMatchObject({ target: null, reason: 'anchor_missing' });
+    const correct = row('12').message;
+    expect(resolve(12, [newer, correct]).target).toBe(correct);
+    expect(resolve(12, [correct, newer]).target).toBe(correct);
   });
 
-  it('anchors by a persisted tool record content hint from the same message', () => {
-    const other = buildMessageWithId(newAnchorText, '222');
-    const anchor = buildMessageWithId(oldAnchorText, '333');
-    expect(findInlineAgentRestoreTarget(
-      { anchorMessageId: '111', anchorContent: '' },
-      ['tool record content that does not match', oldAnchorText],
-      [other, anchor],
-      new Set(),
-    )).toBe(anchor);
-  });
-
-  it('returns null when the anchor message is scrolled out of the virtual window', () => {
-    // Regression: the old run's console mounted onto the newest message
-    // through a stale window index. Only the new run's message is rendered.
-    const newRunMessage = buildMessageWithId(newAnchorText, '222');
-    const messages = [newRunMessage];
-    const used = new Set<Element>();
-    expect(findInlineAgentRestoreTarget(
-      { anchorMessageId: '111', anchorContent: oldAnchorText },
-      [oldAnchorText],
-      messages,
-      used,
-    )).toBeNull();
-    // ...while the new run's own trace still anchors correctly.
-    expect(findInlineAgentRestoreTarget(
-      { anchorMessageId: '222', anchorContent: newAnchorText },
-      [],
-      messages,
-      used,
-    )).toBe(newRunMessage);
-  });
-
-  it('never claims a message already used by another restored trace', () => {
-    const anchor = buildMessageWithId(oldAnchorText, '111');
-    expect(findInlineAgentRestoreTarget(
-      { anchorMessageId: '111', anchorContent: oldAnchorText },
-      [],
-      [anchor],
-      new Set([anchor]),
-    )).toBeNull();
+  it('refuses ambiguous and already claimed identities', () => {
+    const a = message('12'); const b = message('12');
+    expect(resolve(12, [a, b])).toMatchObject({ reason: 'anchor_ambiguous', target: null, candidateCount: 2 });
+    expect(resolveInlineAgentTarget(12, [a], new Set([a]))).toMatchObject({ reason: 'anchor_claimed', target: null });
   });
 });
 
-describe('elementHasMessageId', () => {
-  it('matches direct attributes and descendant id suffixes', () => {
-    const direct = document.createElement('div');
-    direct.setAttribute('data-message-id', '42');
-    expect(elementHasMessageId(direct, '42')).toBe(true);
-
-    const nested = document.createElement('div');
-    const child = document.createElement('div');
-    child.id = 'ds-message-42';
-    nested.appendChild(child);
-    expect(elementHasMessageId(nested, '42')).toBe(true);
-    expect(elementHasMessageId(nested, '43')).toBe(false);
+describe('shared live/restore placement', () => {
+  it('places either presentation at the trigger, never below the final answer', () => {
+    const trigger = row('12'); const final = row('18');
+    for (const restored of [false, true]) {
+      const panel = document.createElement('div'); panel.className = 'dpp-agent-container';
+      if (restored) panel.setAttribute('data-restored', 'true');
+      const target = resolve(12, [trigger.message, final.message]).target!;
+      const host = target.querySelector('.ds-markdown')!;
+      expect(placeInlineAgentContainer(12, target, host, panel)).toBe('mounted');
+      expect(placeInlineAgentContainer(12, target, host, panel)).toBe('unchanged');
+      expect(trigger.message.contains(panel)).toBe(true);
+      expect(final.message.contains(panel)).toBe(false);
+      panel.remove();
+    }
   });
 
-  it('does not match a numeric id inside a longer suffix (token boundary)', () => {
-    // Looking up message id 34 must not match an unrelated element whose
-    // value merely ENDS with `-34` inside a longer id (e.g. `…-234`): the
-    // old bare endsWith match could anchor a console under the wrong message.
-    const nested = document.createElement('div');
-    const child = document.createElement('div');
-    child.id = 'ds-message-234';
-    nested.appendChild(child);
-    expect(elementHasMessageId(nested, '34')).toBe(false);
-    expect(elementHasMessageId(nested, '234')).toBe(true);
+  it('revalidates identity if React recycles a row between lookup and mount', () => {
+    const target = row('12');
+    const panel = document.createElement('div');
+    const host = target.message.querySelector('.ds-markdown')!;
+    target.row.setAttribute('data-virtual-list-item-key', '18');
+    expect(placeInlineAgentContainer(12, target.message, host, panel)).toBe('identity_changed');
+    expect(panel.parentElement).toBeNull();
+  });
 
-    const underscore = document.createElement('div');
-    const underscored = document.createElement('div');
-    underscored.setAttribute('data-id', 'msg_18');
-    underscore.appendChild(underscored);
-    expect(elementHasMessageId(underscore, '18')).toBe(true);
+  it('recognizes identity mutations on the envelope but ignores chart id mutations', () => {
+    const target = row('12');
+    const chart = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+    target.message.querySelector('.ds-markdown')!.append(chart);
+    const mutation = (node: Node, attributeName: string) => ({ type: 'attributes', target: node, attributeName }) as MutationRecord;
+    expect(isAssistantMessageIdentityMutation(mutation(target.row, 'data-virtual-list-item-key'))).toBe(true);
+    expect(isAssistantMessageIdentityMutation(mutation(chart, 'id'))).toBe(false);
   });
 });
