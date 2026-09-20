@@ -5,9 +5,9 @@
  *
  *  - `createDeepSeekTurnSubmitter` — thin adapter over `submitPromptStreaming`
  *    that mirrors the original loop's turn semantics exactly: client headers +
- *    PoW headers created once per turn, a bounded single retry that is only
- *    allowed when no text chunk was received (retrying after streamed content
- *    could fork the conversation chain), and the 120s step timeout. The
+ *    PoW headers created once per turn, one completion dispatch without replay
+ *    (a failed response does not prove the server rejected the message), and
+ *    the 120s step timeout. The
  *    original loop's implementation is replaced by this module in Issue A3;
  *    until then the two copies share the extracted `step-control` helpers.
  *
@@ -42,7 +42,7 @@ import { extractToolCalls } from '../../interceptor/tool-parser';
 import { createStreamingToolCallParser } from '../../interceptor/streaming-tool-call-parser';
 import { createStreamingToolTextAccumulator } from '../../interceptor/streaming-tool-text';
 import type { ToolCall as CoreToolCall } from '../../types';
-import { createStepSignal, waitBetweenDeepSeekRequests } from '../step-control';
+import { createStepSignal } from '../step-control';
 import { createToolProtocolCounter } from '../../diagnostics/tool-protocol';
 import { emitAgentDiagnostic } from '../../diagnostics/agent-reporter';
 import type {
@@ -54,15 +54,13 @@ import type {
   ParsedXmlToolCall,
 } from './stream-fn-port';
 
-const INLINE_AGENT_MAX_STEP_ATTEMPTS = 2;
-
 export interface DeepSeekTurnSubmitterOptions {
   powWasmUrl?: string;
 }
 
 /**
- * Builds the turn submitter: one turn = one PoW solve + bounded no-chunk
- * retry + 120s step timeout, mirroring the original `submitAgentTurn`.
+ * Builds the turn submitter: one turn = one PoW solve, one completion dispatch
+ * and a 120s step timeout. Server acknowledgement is independent of completion.
  */
 export function createDeepSeekTurnSubmitter(
   options: DeepSeekTurnSubmitterOptions = {},
@@ -83,7 +81,7 @@ export function createDeepSeekTurnSubmitter(
       clientHeaders,
       powHeaders,
     };
-    return submitWithRetry(input, callbacks, signal);
+    return submitOnce(input, callbacks, signal);
   };
 }
 
@@ -182,7 +180,21 @@ export function createDeepSeekStreamFn(deps: DeepSeekStreamFnDeps): StreamFn {
           }
         };
 
+        let acceptedRequestId: number | null = null;
+        let acceptedResponseId: number | null = null;
+        const accept: NonNullable<DeepSeekTurnCallbacks['onRequestAccepted']> = (receipt) => {
+          if (!Number.isSafeInteger(receipt.requestMessageId) || receipt.requestMessageId <= 0) return;
+          if (acceptedRequestId !== null && acceptedRequestId !== receipt.requestMessageId) {
+            throw new Error('DeepSeek changed the request message identity within one response stream.');
+          }
+          if (acceptedRequestId === receipt.requestMessageId && acceptedResponseId === receipt.responseMessageId) return;
+          acceptedRequestId = receipt.requestMessageId;
+          acceptedResponseId = receipt.responseMessageId;
+          deps.onRequestAccepted?.(receipt);
+        };
         const callbacks: DeepSeekTurnCallbacks = {
+          onRequestDispatched: deps.onRequestDispatched,
+          onRequestAccepted: accept,
           onTextChunk(text) {
             diagnosticProtocol.append(text);
             diagnosticChars += text.length;
@@ -207,6 +219,10 @@ export function createDeepSeekStreamFn(deps: DeepSeekStreamFnDeps): StreamFn {
 
         const result = await submitTurn(request, callbacks, signal);
         diagnosticFinished = result.finished;
+        if (result.requestMessageId !== null && Number.isSafeInteger(result.requestMessageId)
+          && result.requestMessageId > 0) {
+          accept({ requestMessageId: result.requestMessageId, responseMessageId: result.responseMessageId });
+        }
 
         // Fail-closed stream termination (Issue: mid-output silent stop): a
         // DeepSeek web stream is only complete once the server patches
@@ -274,63 +290,35 @@ export function createDeepSeekStreamFn(deps: DeepSeekStreamFnDeps): StreamFn {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/**
- * Submits one turn with a bounded single retry. A retry is only allowed when
- * the request failed before any text chunk was received: once the server has
- * streamed content the turn is likely committed server-side, and replaying it
- * with the same parent message could fork the conversation chain. User abort
- * is never retried. Mirrors the original loop's `submitAgentTurn`.
- */
-async function submitWithRetry(
+/** A completion creates remote messages. Once dispatched, failure is not
+ * evidence that the server rejected it; never replay automatically. */
+async function submitOnce(
   input: SubmitPromptInput,
   callbacks: DeepSeekTurnCallbacks,
   parentSignal: AbortSignal | undefined,
 ): Promise<DeepSeekTurnResult> {
   const signal = parentSignal ?? new AbortController().signal;
-  let receivedAnyChunk = false;
-
-  for (let attempt = 1; attempt <= INLINE_AGENT_MAX_STEP_ATTEMPTS; attempt++) {
-    const stepTimeout = createStepSignal(signal);
-    try {
-      const turn: ModelTurn = await submitPromptStreaming(input, {
-        retainAssistantText: false,
-        onTextChunk(text, fullText) {
-          receivedAnyChunk = true;
-          callbacks.onTextChunk(text, fullText);
-        },
-        onReasoningChunk(reasoning, fullReasoning) {
-          // Reasoning deltas are streamed content too: a turn that only
-          // streamed thinking before timing out must NOT be resubmitted with
-          // the same parent_message_id (the server may have already committed
-          // the response, forking the conversation chain).
-          receivedAnyChunk = true;
-          callbacks.onReasoningChunk?.(reasoning, fullReasoning);
-        },
-        onTokenSpeed: callbacks.onTokenSpeed,
-      }, stepTimeout.signal);
-      return {
-        assistantText: turn.assistantText,
-        responseMessageId: turn.responseMessageId,
-        requestMessageId: turn.requestMessageId,
-        finished: turn.finished,
-      };
-    } catch (err) {
-      if (signal.aborted) throw err;
-      const timeoutFired = stepTimeout.timedOut();
-      if (timeoutFired && receivedAnyChunk) {
-        throw new Error('DeepSeek agent step timed out while streaming; the response was interrupted.');
-      }
-      if (attempt >= INLINE_AGENT_MAX_STEP_ATTEMPTS) {
-        if (timeoutFired) throw new Error('DeepSeek agent step timed out after retry.');
-        throw err;
-      }
-      await waitBetweenDeepSeekRequests(signal);
-      if (signal.aborted) throw err;
-    } finally {
-      stepTimeout.clear();
+  if (signal.aborted) throw signal.reason ?? new Error('Aborted');
+  const stepTimeout = createStepSignal(signal);
+  try {
+    const turn: ModelTurn = await submitPromptStreaming(input, {
+      retainAssistantText: false,
+      onRequestDispatched: callbacks.onRequestDispatched,
+      onRequestAccepted: callbacks.onRequestAccepted,
+      onTextChunk: callbacks.onTextChunk,
+      onReasoningChunk: callbacks.onReasoningChunk,
+      onTokenSpeed: callbacks.onTokenSpeed,
+    }, stepTimeout.signal);
+    return { assistantText: turn.assistantText, responseMessageId: turn.responseMessageId,
+      requestMessageId: turn.requestMessageId, finished: turn.finished };
+  } catch (error) {
+    if (!signal.aborted && stepTimeout.timedOut()) {
+      throw new Error('DeepSeek agent step timed out; the request was not replayed.');
     }
+    throw error;
+  } finally {
+    stepTimeout.clear();
   }
-  throw new Error('DeepSeek agent step failed without a completed attempt.');
 }
 
 function createEmptyAssistantMessage(model: Model<Api>): AssistantMessage {

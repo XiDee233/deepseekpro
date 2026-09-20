@@ -11,6 +11,8 @@
 import { runPiInlineAgentLoop } from './pi/loop-adapter';
 import type { PostFn, ExecuteToolFn } from './pi/loop-adapter';
 import type { InlineAgentStartPayload } from './types';
+import type { PendingInputQueue } from './pending-input';
+import type { InputPauseState } from './pi/loop-adapter';
 import type { AgentDiagnosticSink } from '../diagnostics/agent-contract';
 
 export type { PostFn, ExecuteToolFn };
@@ -20,12 +22,16 @@ export interface InlineAgentLoopDeps {
   executeTool: ExecuteToolFn;
   signal: AbortSignal;
   onDiagnostic?: AgentDiagnosticSink;
+  pendingInput?: PendingInputQueue;
+  onInputPause?: (state: InputPauseState) => void;
+  onContinuationMessage?: (messageId: number, userInput: readonly string[]) => void;
 }
 
 export async function runInlineAgentLoop(
   payload: InlineAgentStartPayload,
   deps: InlineAgentLoopDeps,
 ): Promise<void> {
-  const { post, executeTool, signal, onDiagnostic } = deps;
-  return runPiInlineAgentLoop({ payload, post, executeTool, signal, onDiagnostic });
+  const { post, executeTool, signal, onDiagnostic, onContinuationMessage } = deps;
+  return runPiInlineAgentLoop({ payload, post, executeTool, signal, onDiagnostic, onContinuationMessage,
+    pendingInput: deps.pendingInput, onInputPause: deps.onInputPause });
 }

@@ -45,6 +45,17 @@ const pathAllowlist = new Map([
 
 const lineAllowlist = [
   {
+    path: 'core/ui/prompt-send-interception.ts',
+    includes: 'aria-label="发送"',
+    reason: 'matches the host DeepSeek send control; this is a DOM selector, not extension UI copy',
+  },
+
+  {
+    path: 'core/ui/prompt-send-interception.ts',
+    includes: 'aria-label="停止',
+    reason: 'Native DeepSeek stop-button selector; not user-facing extension copy.',
+  },
+  {
     path: 'core/i18n/resources/en/locale.ts',
     includes: "zhCN: '简体中文'",
     reason: 'language selector uses the native name for Simplified Chinese',

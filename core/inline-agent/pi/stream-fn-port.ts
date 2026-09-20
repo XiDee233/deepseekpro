@@ -24,6 +24,7 @@ import type { Context, ToolCall } from '@earendil-works/pi-ai';
 import type { ToolDescriptor } from '../../types';
 import type { ResponseTokenSpeedPayload } from '../../deepseek/stream-metrics';
 import type { AgentDiagnosticSink } from '../../diagnostics/agent-contract';
+import type { DeepSeekRequestReceipt } from '../../deepseek/automation-client-port';
 
 /** One DS-web turn request — the serializable wire contract. */
 export interface DeepSeekTurnRequest {
@@ -38,6 +39,8 @@ export interface DeepSeekTurnRequest {
 
 /** Callbacks invoked while the DS-web turn streams. */
 export interface DeepSeekTurnCallbacks {
+  onRequestDispatched?: () => void;
+  onRequestAccepted?: (receipt: DeepSeekRequestReceipt) => void;
   onTextChunk: (text: string, fullText: string) => void;
   /** Reasoning/thinking deltas of the current turn (THINK fragments). */
   onReasoningChunk?: (reasoning: string, fullReasoning: string) => void;
@@ -55,7 +58,7 @@ export interface DeepSeekTurnResult {
 /**
  * The model-backend seam: submits one DS-web turn and resolves with its
  * result. Satisfied by a thin wrapper around `submitPromptStreaming`
- * (same callbacks, same no-chunk-retry / abort semantics).
+ * (same callbacks and abort semantics; no automatic completion replay).
  */
 export type DeepSeekTurnSubmitter = (
   request: DeepSeekTurnRequest,
@@ -126,6 +129,9 @@ export interface DeepSeekStreamFnDeps {
    */
   onTokenSpeed?: (progress: ResponseTokenSpeedPayload) => void;
   onDiagnostic?: AgentDiagnosticSink;
+  onRequestDispatched?: () => void;
+  /** The receipt comes from the web backend, never inferred from text. */
+  onRequestAccepted?: (receipt: DeepSeekRequestReceipt) => void;
 }
 
 /** The pi StreamFn factory implemented by the DS-web adapter. */

@@ -70,17 +70,30 @@ export function isInlineAgentContinuationPrompt(content: string): boolean {
     content.includes('不要调用任何工具');
 }
 
+/** Read only the trailing user-input block emitted by buildContinuationPrompt.
+ * Tool results and the original task may quote similar tags; neither is input. */
+export function readInlineAgentUserInput(content: string): string | null {
+  if (!isInlineAgentContinuationPrompt(content)) return null;
+  const boundary = '\n</tool_results>\n\n<user_input>\n';
+  const end = '\n</user_input>';
+  const start = content.lastIndexOf(boundary);
+  if (start < 0 || !content.endsWith(end)) return null;
+  try {
+    const input: unknown = JSON.parse(content.slice(start + boundary.length, -end.length));
+    if (!Array.isArray(input) || input.length === 0 || !input.every((text) => typeof text === 'string')) {
+      throw new Error('Invalid continuation input array');
+    }
+    return input.join('\n\n');
+  } catch {
+    console.warn('[DeepSeek++] Invalid user-input block in continuation history');
+    return null;
+  }
+}
+
 /**
- * Looser structural detector for inline-agent continuation text as rendered in
- * the live DOM. DeepSeek may interleave its own chrome (timestamps, action
- * rows, reasoning fragments) with the continuation prompt, so the strict
- * {@link isInlineAgentContinuationPrompt} keyword check can miss it and leave
- * an empty user bubble. The paired `<original_task>` + `<tool_results[_so_far]>`
- * tags are a strong enough structural signal on their own — a real user
- * message would not contain both — so we drop the keyword requirement here.
- *
- * The strict version is still used for history-list API cleanup, where the
- * raw prompt text is intact and false positives are costlier.
+ * Structural probe for a prompt envelope. These tags can also occur in normal
+ * answers and code examples; this is NOT evidence of message ownership and
+ * must never be used to hide a DOM message.
  */
 export function isInlineAgentContinuationStructure(content: string): boolean {
   return hasInlineAgentContinuationTags(content);
@@ -134,6 +147,7 @@ export function buildContinuationPrompt(
   originalTask: string,
   executions: ToolExecutionRecord[],
   locale: SupportedLocale = DEFAULT_LOCALE,
+  userInput: readonly string[] = [],
 ): string {
   const hasFailures = executions.some((e) => !e.result.ok);
   const results = renderWindowedToolResults(executions);
@@ -154,6 +168,7 @@ export function buildContinuationPrompt(
     '<tool_results>',
     JSON.stringify(results, null, 2),
     '</tool_results>',
+    ...(userInput.length > 0 ? ['', '<user_input>', JSON.stringify(userInput), '</user_input>'] : []),
   ].join('\n');
 }
 

@@ -3,7 +3,7 @@
  *
  * Uses the same adapter mock seam as the inline-agent tests
  * (`vi.mock('../core/deepseek/adapter')`), so the turn submitter exercises
- * the real no-chunk-retry / step-timeout semantics against mocked
+ * the single-dispatch / step-timeout semantics against mocked
  * `submitPromptStreaming`.
  */
 
@@ -237,8 +237,8 @@ describe('createDeepSeekStreamFn', () => {
     await vi.advanceTimersByTimeAsync(7_000);
     await drain;
 
-    // Both attempts fail with the same error; the second attempt surfaces it.
-    expect(adapterMocks.submitPromptStreaming).toHaveBeenCalledTimes(2);
+    // A failure is surfaced without replaying a possibly accepted request.
+    expect(adapterMocks.submitPromptStreaming).toHaveBeenCalledTimes(1);
     const last = events.at(-1);
     expect(last?.type).toBe('error');
     if (last?.type === 'error') {
@@ -275,7 +275,7 @@ describe('createDeepSeekStreamFn', () => {
     }
   });
 
-  it('retries once when the turn failed before any chunk was received', async () => {
+  it('does not replay a failure before the first chunk because delivery is unknown', async () => {
     vi.useFakeTimers();
     adapterMocks.submitPromptStreaming
       .mockRejectedValueOnce(new Error('transient'))
@@ -294,9 +294,9 @@ describe('createDeepSeekStreamFn', () => {
     await vi.advanceTimersByTimeAsync(7_000);
     await drain;
 
-    expect(adapterMocks.submitPromptStreaming).toHaveBeenCalledTimes(2);
-    expect(events.some((e) => e.type === 'error')).toBe(false);
-    expect(events.at(-1)?.type).toBe('done');
+    expect(adapterMocks.submitPromptStreaming).toHaveBeenCalledTimes(1);
+    expect(events.some((e) => e.type === 'error')).toBe(true);
+    expect(events.at(-1)?.type).toBe('error');
   });
 
   it('does not retry a timed-out step after text was already received', async () => {
@@ -323,7 +323,7 @@ describe('createDeepSeekStreamFn', () => {
     expect(last?.type).toBe('error');
     if (last?.type === 'error') {
       expect(last.error.errorMessage).toBe(
-        'DeepSeek agent step timed out while streaming; the response was interrupted.',
+        'DeepSeek agent step timed out; the request was not replayed.',
       );
       expect(last.error.content).toEqual([{ type: 'text', text: 'partial...' }]);
     }
@@ -357,7 +357,7 @@ describe('createDeepSeekStreamFn', () => {
     expect(last?.type).toBe('error');
     if (last?.type === 'error') {
       expect(last.error.errorMessage).toBe(
-        'DeepSeek agent step timed out while streaming; the response was interrupted.',
+        'DeepSeek agent step timed out; the request was not replayed.',
       );
     }
   });

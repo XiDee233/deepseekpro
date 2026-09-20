@@ -53,6 +53,7 @@ import type {
   DeepSeekRequestContext,
   ModelTurn,
   SubmitPromptInput,
+  DeepSeekRequestReceipt,
 } from './automation-client-port';
 
 export {
@@ -102,6 +103,8 @@ export interface DeepSeekFileUploadInput {
 export type { DeepSeekUploadedFile } from './contracts';
 
 export interface StreamCallbacks {
+  onRequestDispatched?(): void;
+  onRequestAccepted?(receipt: DeepSeekRequestReceipt): void;
   onTextChunk?(text: string, fullText: string): void;
   /** Reasoning/thinking deltas of the current response (THINK fragments). */
   onReasoningChunk?(reasoning: string, fullReasoning: string): void;
@@ -421,7 +424,7 @@ export async function submitPromptStreaming(
   callbacks: StreamCallbacks,
   signal?: AbortSignal,
 ): Promise<ModelTurn> {
-  const response = await requestCompletion(input, { signal });
+  const response = await requestCompletion(input, { signal, onDispatch: callbacks.onRequestDispatched });
 
   if (!response.ok) {
     throw new DeepSeekPayloadError(await readFailureMessage(response), { retryable: true });
@@ -544,12 +547,22 @@ async function readCompletionStreamWithCallbacks(
       assistantMessageId: summary.responseMessageId,
     }), TOKEN_SPEED_EMIT_INTERVAL_MS)
     : null;
-  const onParsed = speedTracker
+  let lastReceipt: DeepSeekRequestReceipt | null = null;
+  const onParsed = speedTracker || callbacks.onRequestAccepted
     ? (parsed: unknown, event: SSEEvent) => {
-      speedTracker.updateServerStats(extractResponseUsageStatsFromParsed(parsed, event.type));
+      // stream-codec updates message IDs before invoking onParsed. A receipt
+      // survives a later stream error; it must not wait for reader completion.
+      if (summary.requestMessageId !== null && Number.isSafeInteger(summary.requestMessageId)
+        && summary.requestMessageId > 0
+        && (lastReceipt?.requestMessageId !== summary.requestMessageId
+          || lastReceipt?.responseMessageId !== summary.responseMessageId)) {
+        lastReceipt = { requestMessageId: summary.requestMessageId, responseMessageId: summary.responseMessageId };
+        callbacks.onRequestAccepted?.(lastReceipt);
+      }
+      speedTracker?.updateServerStats(extractResponseUsageStatsFromParsed(parsed, event.type));
       const tokenText = extractResponseTextForTokenSpeed(parsed);
-      if (tokenText) speedTracker.append(tokenText);
-      if (isStreamFinishedFromParsed(parsed)) speedTracker.finish();
+      if (tokenText) speedTracker?.append(tokenText);
+      if (isStreamFinishedFromParsed(parsed)) speedTracker?.finish();
     }
     : undefined;
 

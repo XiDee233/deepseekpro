@@ -5,6 +5,12 @@ export interface ModelTurn {
   finished: boolean;
 }
 
+/** Server acknowledgement of a created user message, independent of response completion. */
+export interface DeepSeekRequestReceipt {
+  readonly requestMessageId: number;
+  readonly responseMessageId: number | null;
+}
+
 export interface DeepSeekHistorySnapshot {
   chatSessionId: string;
   parentMessageId: number | null;

@@ -8,6 +8,11 @@ export const AGENT_DIAGNOSTIC_EVENTS = [
   'content_ready', 'loop_stop_requested',
   'model_stream_summary',
   'agent_anchor_decision', 'agent_ui_mounted', 'agent_ui_detached', 'agent_restore_render',
+  'message_visibility',
+  'user_input_queued', 'user_input_submitted', 'user_input_failed', 'loop_paused', 'loop_resumed',
+  'composer_owned', 'user_input_intercepted',
+  'send_button_replaced', 'composer_send_routed',
+  'model_request_dispatched', 'model_request_accepted', 'user_input_accepted', 'user_input_uncertain', 'message_visibility_failed',
 ] as const;
 export const AGENT_DIAGNOSTIC_REASONS = [
   'internal_response', 'already_running', 'no_continuable_tools', 'missing_chain',
@@ -20,6 +25,9 @@ export const AGENT_DIAGNOSTIC_REASONS = [
   'stream_error', 'fetch_rejected', 'empty_body', 'parse_rejected', 'tool_failed',
   'user_stop', 'lifecycle_stop', 'loop_replaced', 'timeout',
   'anchor_matched', 'anchor_missing', 'anchor_ambiguous', 'anchor_claimed', 'anchor_identity_changed',
+  'user_input_pending', 'user_input_rejected',
+  'owned_continuation', 'continuation_placeholder', 'assistant_visible', 'ordinary_visible',
+  'user_input_visible',
 ] as const;
 export type AgentDiagnosticReason = typeof AGENT_DIAGNOSTIC_REASONS[number];
 export interface AgentDiagnosticEvent {
@@ -68,6 +76,18 @@ export interface AgentDiagnosticEvent {
   restored?: boolean;
   nativeFinalOwned?: boolean;
   anchorSource?: 'message_attribute' | 'virtual_item_key';
+  messageId?: number;
+  hidden?: boolean;
+  parentMessageId?: number;
+  inputCount?: number;
+  inputChars?: number;
+  inputSeq?: number;
+  nativeRequestMessageId?: number;
+  attempt?: number;
+  inputSource?: 'keyboard' | 'button' | 'form';
+  inputRoute?: 'native' | 'queue' | 'blocked' | 'stop';
+  addedCount?: number;
+  removedCount?: number;
 }
 export type AgentDiagnosticSink = (event: AgentDiagnosticEvent) => void;
 export interface AgentDiagnosticPayload extends AgentDiagnosticEvent {
@@ -84,8 +104,11 @@ const numbers = new Set([
   'dsmlCalls', 'dsmlInvokes', 'visibleDsmlMarkers',
   'httpStatus',
   'anchorMessageId', 'matchedMessageId', 'finalResponseMessageId', 'candidateCount', 'renderedStepCount',
+  'messageId', 'parentMessageId', 'inputCount', 'inputChars',
+  'addedCount', 'removedCount',
+  'inputSeq', 'nativeRequestMessageId', 'attempt',
 ]);
-const booleans = new Set(['hasChain', 'isNudge', 'nudgeNeeded', 'ok', 'fallbackTruncated', 'streamFinished', 'restored', 'nativeFinalOwned']);
+const booleans = new Set(['hasChain', 'isNudge', 'nudgeNeeded', 'ok', 'fallbackTruncated', 'streamFinished', 'restored', 'nativeFinalOwned', 'hidden']);
 const enums: Record<string, readonly string[]> = {
   event: AGENT_DIAGNOSTIC_EVENTS,
   reason: AGENT_DIAGNOSTIC_REASONS,
@@ -95,6 +118,8 @@ const enums: Record<string, readonly string[]> = {
   stage: ['interceptor', 'content', 'loop'],
   transport: ['fetch', 'xhr'],
   anchorSource: ['message_attribute', 'virtual_item_key'],
+  inputSource: ['keyboard', 'button', 'form'],
+  inputRoute: ['native', 'queue', 'blocked', 'stop'],
 };
 
 /** Reject arbitrary text/objects rather than allowing diagnostics to ingest payloads. */

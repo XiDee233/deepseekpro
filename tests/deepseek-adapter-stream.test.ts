@@ -385,3 +385,21 @@ function jsonResponse(value: unknown): Response {
     headers: { 'content-type': 'application/json' },
   });
 }
+
+it('keeps a server receipt when the response stream fails after acknowledgement', async () => {
+  let failStream!: () => void;
+  const fetchMock = vi.fn(async () => new Response(new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode('data: {"request_message_id":51,"response_message_id":52}\n\n'));
+      failStream = () => controller.error(new Error('stream interrupted'));
+    },
+  })));
+  vi.stubGlobal('fetch', fetchMock);
+  const accepted = vi.fn(() => failStream()); const dispatched = vi.fn();
+  try {
+    await expect(submitPromptStreaming(createSubmitInput(), { onRequestDispatched: dispatched, onRequestAccepted: accepted })).rejects.toThrow();
+    expect(dispatched).toHaveBeenCalledOnce();
+    expect(accepted).toHaveBeenCalledExactlyOnceWith({ requestMessageId: 51, responseMessageId: 52 });
+    expect(fetchMock).toHaveBeenCalledOnce();
+  } finally { vi.unstubAllGlobals(); }
+});

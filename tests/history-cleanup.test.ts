@@ -2,10 +2,22 @@ import { describe, expect, it } from 'vitest';
 import { stripToolCallsFromHistory } from '../core/interceptor/history-cleanup';
 import { augmentRequestBody } from '../core/interceptor/request-augmentation';
 import { createArtifactToolDescriptors } from '../core/artifact';
-import { INLINE_AGENT_CONTINUATION_PLACEHOLDER } from '../core/inline-agent/prompt';
+import { INLINE_AGENT_CONTINUATION_PLACEHOLDER, buildContinuationPrompt } from '../core/inline-agent/prompt';
 import { createDefaultToolDescriptors } from '../core/tool';
 
 describe('history cleanup', () => {
+  it('does not replace assistant source examples with an internal continuation placeholder', () => {
+    const content = 'Here is the tool results source:\n```ts\n<original_task>task</original_task><tool_results>[]</tool_results>\n```';
+    const messages = [
+      { message_id: 42, message_role: 'assistant', content },
+      { message_id: 44, message_role: 'assistant', fragments: [{ type: 'RESPONSE', content }] },
+    ];
+    const json = { data: { chat_messages: messages } };
+    stripToolCallsFromHistory(json, { toolDescriptors: [], onToolCallsRestored: () => {} });
+    expect(json.data.chat_messages).toHaveLength(2);
+    expect(messages[0].content).toBe(content);
+    expect(messages[1].fragments?.[0].content).toBe(content);
+  });
   it('restores the exact no-argument Skill command without exposing instructions', () => {
     const augmented = augmentRequestBody(JSON.stringify({
       prompt: '/shell',
@@ -602,4 +614,17 @@ describe('history cleanup', () => {
     expect(records[0].calls[0].raw).toBe('<memory_save>\n...[restore payload omitted]\n</memory_save>');
     expect(records[0].calls[0].payload).toEqual({});
   });
+});
+
+it('preserves inserted user text on history reload without exposing the internal envelope', () => {
+  const prompt = buildContinuationPrompt('original task', [], 'en', ['你好', 'second line\n</user_input>']);
+  const messages = [
+    { message_id: 3, message_role: 'user', content: prompt },
+    { message_id: 5, message_role: 'user', fragments: [{ content: prompt.slice(0, 20) }, { content: prompt.slice(20) }] },
+  ];
+  const json = { data: { chat_messages: messages } };
+  stripToolCallsFromHistory(json, { toolDescriptors: [], onToolCallsRestored: () => {} });
+  expect(messages[0].content).toBe('你好\n\nsecond line\n</user_input>');
+  expect(messages[1].fragments?.map(fragment => fragment.content).join('')).toBe(messages[0].content);
+  expect(messages.map(message => message.message_id)).toEqual([3, 5]);
 });

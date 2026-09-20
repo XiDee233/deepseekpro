@@ -2,6 +2,7 @@ import { DPP_MANAGED_AGENT_PROMPT_MARKER } from '../constants';
 import {
   INLINE_AGENT_CONTINUATION_PLACEHOLDER,
   isInlineAgentContinuationPrompt,
+  readInlineAgentUserInput,
   replaceTaskCompleteBlocks,
 } from '../inline-agent/prompt';
 import { sanitizeInternalPromptText } from '../prompt';
@@ -102,7 +103,9 @@ function stripMessageToolCalls(
   visibleMessages.forEach((msg: any, index: number) => {
     const replaceTaskComplete = shouldReplaceStoredTaskCompleteBlocks(msg, inlineAgentContinuationMessageIds);
     const shouldRestoreToolCalls = !replaceTaskComplete;
-    sanitizeInlineAgentContinuationMessage(msg);
+    // Preserve the user's inserted text verbatim; never treat its quoted XML
+    // as tool output or run it through internal-prompt stripping.
+    if (sanitizeInlineAgentContinuationMessage(msg)) return;
     sanitizeStoredMessageInternalPrompt(msg, { replaceTaskComplete });
     const hasStoredToolCall = storedMessageHasToolCallMarker(msg, toolDescriptors);
     const isAssistant = isAssistantStoredMessage(msg) || hasStoredToolCall;
@@ -619,6 +622,7 @@ function sanitizeStoredControlText(text: string, options: { replaceTaskComplete:
 
 function isInternalManagedAgentMessage(msg: any): boolean {
   if (!msg || typeof msg !== 'object') return false;
+  if (isAssistantStoredMessage(msg)) return false;
   if (typeof msg.content === 'string' && isInternalManagedAgentContent(msg.content)) return true;
   if (!Array.isArray(msg.fragments)) return false;
   return msg.fragments.some((frag: any) => typeof frag?.content === 'string' && isInternalManagedAgentContent(frag.content));
@@ -630,26 +634,31 @@ function isRemovableInternalManagedAgentMessage(msg: any): boolean {
 
 function isInlineAgentContinuationMessage(msg: any): boolean {
   if (!msg || typeof msg !== 'object') return false;
+  if (isAssistantStoredMessage(msg)) return false;
   if (typeof msg.content === 'string' && isInlineAgentContinuationPrompt(msg.content)) return true;
   if (!Array.isArray(msg.fragments)) return false;
-  return msg.fragments.some((frag: any) => typeof frag?.content === 'string' && isInlineAgentContinuationPrompt(frag.content));
+  return isInlineAgentContinuationPrompt(msg.fragments
+    .filter((frag: any) => typeof frag?.content === 'string')
+    .map((frag: any) => frag.content).join(''));
 }
 
-function sanitizeInlineAgentContinuationMessage(msg: any) {
-  if (!isInlineAgentContinuationMessage(msg)) return;
+function sanitizeInlineAgentContinuationMessage(msg: any): boolean {
+  if (!isInlineAgentContinuationMessage(msg)) return false;
+
+  const fragments = Array.isArray(msg.fragments)
+    ? msg.fragments.filter((fragment: any) => typeof fragment?.content === 'string') : [];
+  const input = (typeof msg.content === 'string' ? readInlineAgentUserInput(msg.content) : null)
+    ?? readInlineAgentUserInput(fragments.map((fragment: any) => fragment.content).join(''));
+  const display = input ?? INLINE_AGENT_CONTINUATION_PLACEHOLDER;
 
   if (typeof msg.content === 'string' && isInlineAgentContinuationPrompt(msg.content)) {
-    msg.content = INLINE_AGENT_CONTINUATION_PLACEHOLDER;
+    msg.content = display;
   }
 
-  if (!Array.isArray(msg.fragments)) return;
+  if (!Array.isArray(msg.fragments)) return input !== null;
 
-  let replaced = false;
-  for (const frag of msg.fragments) {
-    if (!frag || typeof frag.content !== 'string' || !isInlineAgentContinuationPrompt(frag.content)) continue;
-    frag.content = replaced ? '' : INLINE_AGENT_CONTINUATION_PLACEHOLDER;
-    replaced = true;
-  }
+  fragments.forEach((fragment: any, index: number) => { fragment.content = index === 0 ? display : ''; });
+  return input !== null;
 }
 
 function isInternalManagedAgentContent(content: string): boolean {

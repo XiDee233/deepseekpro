@@ -20,7 +20,10 @@ import { getDeepSeekApiKey } from "../core/chat/api-key";
 import { createAgentDiagnosticReporter, deliverAgentDiagnostic } from "../core/diagnostics/agent-reporter";
 import { decodeAgentDiagnosticPayload, type AgentDiagnosticEvent, type AgentDiagnosticReason } from "../core/diagnostics/agent-contract";
 // Logging must not run the normal RPC invalidation/recovery path on failure.
-const reportAgentDiagnostic = createAgentDiagnosticReporter((message) => chrome.runtime.sendMessage(message));
+const deliverContentAgentDiagnostic = createAgentDiagnosticReporter((message) => chrome.runtime.sendMessage(message));
+const reportAgentDiagnostic = (event: AgentDiagnosticEvent) => {
+  if (hasLiveExtensionContext()) deliverContentAgentDiagnostic(event);
+};
 import { normalizePetConfig } from "../core/pet/config";
 import { pickPetLine, type PetState } from "../core/pet/lines";
 import { createToolInvocationCatalog } from "../core/tool/invocation";
@@ -82,7 +85,10 @@ import { shouldIgnoreEmptyTokenSpeedProgress } from "../core/deepseek/stream-met
 import { readDeepSeekChatSessionId } from "../core/deepseek/chat-session";
 import { createUsageProgressWriteCoordinator } from "../core/usage/progress-write-coordinator";
 import { runInlineAgentLoop } from "../core/inline-agent/loop";
+import { startPendingInputSession, type PendingInputSession } from "../core/inline-agent/pending-input-session";
+import { createPromptSendGuard, type PromptSendGuard } from "../core/ui/prompt-send-interception";
 import { waitForInlineAgentLiveTarget } from "../core/inline-agent/live-target-wait";
+import { reconcileContinuationVisibility, mutationMayAffectContinuationVisibility } from "../core/inline-agent/continuation-visibility";
 import {
   getInlineAgentNativeHistoryResponseId,
   isInlineAgentNativeHistoryBackedTrace,
@@ -97,7 +103,6 @@ import {
 import {
   INLINE_AGENT_CONTINUATION_PLACEHOLDER,
   isInlineAgentContinuationRequest,
-  isInlineAgentContinuationStructure,
   replaceTaskCompleteBlocks,
 } from "../core/inline-agent/prompt";
 import {
@@ -527,6 +532,7 @@ let inlineAgentContainer: HTMLElement | null = null;
 let inlineAgentCurrentStep: HTMLElement | null = null;
 let inlineAgentLoopId: string | null = null;
 const agentAnchorDiagnosticStates = new Map<string, string>();
+const ownedContinuationRequestMessageIds = new Map<string, string>();
 let renderedToolCallCleanerFrame: number | null = null;
 let activeInlineAgentTrace: InlineAgentTraceRecord | null = null;
 let inlineAgentTraceWriteTimer: ReturnType<typeof setTimeout> | null = null;
@@ -558,6 +564,8 @@ let currentToolDescriptors: ToolDescriptor[] = [];
 const toolDescriptorSyncGate = createLatestSyncGate();
 let currentRequestMessageCount = 0;
 let activeAgentAbort: AbortController | null = null;
+let pendingInputOwner: { session: PendingInputSession; requestId: string; chatSessionId: string; running: boolean; stopRequested: boolean } | null = null;
+let promptSendGuard: PromptSendGuard | null = null;
 let agentRunningToolCount = 0;
 let agentConsoleStartedAt = 0;
 let agentConsoleElapsedSeconds = 0;
@@ -828,11 +836,22 @@ export default defineContentScript({
   runAt: "document_start",
   async main() {
     extensionContextValid = true;
+    const guard = createPromptSendGuard(document, {
+      findInputBox: findDeepSeekInputBox,
+      onReplacement: (candidateCount, addedCount, removedCount) => reportAgentDiagnostic({
+        event: 'send_button_replaced', stage: 'content', candidateCount, addedCount, removedCount,
+      }),
+      onRoute: (inputSource, inputRoute) => reportAgentDiagnostic({
+        event: 'composer_send_routed', stage: 'content', inputSource, inputRoute,
+      }),
+    });
+    guard.start();
+    promptSendGuard = guard;
     const controllers = createContentCapabilityControllers();
     const lifecycle = await replaceContentDocumentLifecycle({
       capabilities: controllers,
       onError: reportContentLifecycleError,
-    });
+    }).catch((error) => { guard.stop(); throw error; });
     if (!extensionContextValid) {
       await lifecycle.dispose("extension-invalidated");
       return;
@@ -861,6 +880,16 @@ function createContentCapabilityControllers(): readonly ContentCapabilityControl
   mainWorldBridgeController = bridgeController;
 
   return [
+    {
+      id: "prompt-send-guard",
+      start(scope) {
+        const guard = promptSendGuard;
+        if (!guard) throw new Error('Document-start input guard is missing.');
+        guard.start();
+        scope.addCleanup("listener", () => guard.stop());
+      },
+      stop() {},
+    },
     createRuntimeStateCapability(),
     // Start transport before DOM capabilities; chat ingress starts last so reverse
     // teardown gates new dispatch before aborting work and closing authorizations.
@@ -1126,6 +1155,7 @@ async function stopInlineAgentCapability(): Promise<void> {
   while (pendingInlineAgentLoopTasks.size > 0) {
     await Promise.allSettled([...pendingInlineAgentLoopTasks]);
   }
+  if (pendingInputOwner) releasePendingInputOwner(pendingInputOwner, false);
   teardownInlineAgentPanel();
   if (restoredInlineAgentRenderTimer) {
     clearTimeout(restoredInlineAgentRenderTimer);
@@ -1140,6 +1170,7 @@ async function stopInlineAgentCapability(): Promise<void> {
     await Promise.allSettled([...pendingInlineAgentPersistenceOperations]);
   }
   responseGeneration += 1;
+  ownedContinuationRequestMessageIds.clear();
   agentAnchorDiagnosticStates.clear();
   restoredInlineAgentTraces.clear();
   pendingRestoredInlineAgentTraceIds.clear();
@@ -1293,11 +1324,13 @@ async function dispatchMainWorldMessage(
         break;
       }
       case "TOOL_CALL_STARTED": {
+        beginPendingInputForTool(data.data as ToolCall);
         showPendingToolExecution(data.data as ToolCall);
         break;
       }
       case "TOOL_CALL": {
         const call = ensureToolCallId(data.data as ToolCall);
+        beginPendingInputForTool(call);
         reportAgentDiagnostic({ event: 'tool_received', stage: 'content', toolCallId: call.id,
           requestId: call.source?.requestId, ok: !call.parseError,
           ...(call.parseError ? { reason: 'parse_rejected' } : {}) });
@@ -1337,6 +1370,7 @@ async function dispatchMainWorldMessage(
         );
         rememberRegenerateAuthorizationScope(complete);
         const generation = ++responseGeneration;
+        try {
         reportAgentDiagnostic({ event: 'response_received', stage: 'content',
           requestId: complete.requestId, chatSessionId: complete.chatSessionId ?? undefined,
           assistantMessageId: complete.assistantMessageId ?? undefined,
@@ -1382,14 +1416,23 @@ async function dispatchMainWorldMessage(
           toolExecutions = [];
           toolBlockEl = null;
         }
-        void startInlineAgentIfNeeded(complete, completedExecutions);
+        await startInlineAgentIfNeeded(complete, completedExecutions);
         schedulePetIdle();
+        } finally {
+          if (pendingInputOwner?.requestId === complete.requestId && !pendingInputOwner.running) {
+            releasePendingInputOwner(pendingInputOwner);
+          }
+        }
         break;
       }
       case "REQUEST_TERMINAL": {
         const requestId = (data.payload as { requestId?: unknown } | undefined)
           ?.requestId;
         if (typeof requestId !== "string") break;
+        if (pendingInputOwner && !pendingInputOwner.running
+          && pendingInputOwner.requestId === (toolAuthorizationRequestAliases.get(requestId) ?? requestId)) {
+          releasePendingInputOwner(pendingInputOwner);
+        }
         if (
           activeToolAuthorizations.has(requestId) ||
           toolAuthorizationRequestAliases.has(requestId)
@@ -4509,6 +4552,9 @@ async function startInlineAgentIfNeeded(
       assistantMessageId: complete.assistantMessageId ?? undefined,
       toolCount: executions.length, textLength: complete.text.length, ...extra });
   };
+  if (pendingInputOwner?.requestId === complete.requestId && pendingInputOwner.stopRequested) {
+    diagnoseDecision('user_stop'); return;
+  }
   if (isInlineAgentResponseComplete(complete)) {
     diagnoseDecision('internal_response');
     return;
@@ -4520,7 +4566,7 @@ async function startInlineAgentIfNeeded(
   // Starting a second loop previously left two agent panels racing in the DOM.
   // Continuation turns are produced by the agent loop itself and are already
   // handled by isInlineAgentResponseComplete above.
-  if (isInlineAgentRunning()) {
+  if (isInlineAgentRunning(complete.requestId)) {
     diagnoseDecision('already_running');
     showContentToast(contentT("content.agent.concurrencyGuard"), "warning");
     return;
@@ -4619,6 +4665,14 @@ async function startInlineAgentIfNeeded(
       showContentToast(contentT("content.agent.startFailed"), "warning");
     return;
   }
+  if (pendingInputOwner?.requestId === complete.requestId && pendingInputOwner.stopRequested) {
+    diagnoseDecision('user_stop'); return;
+  }
+  // Another response can acquire the composer while the DOM anchor wait yields.
+  if (isInlineAgentRunning(complete.requestId)) {
+    diagnoseDecision('already_running', { loopId });
+    return;
+  }
   const { target, messages } = located;
   const anchorMessageIndex = messages.indexOf(target);
 
@@ -4673,11 +4727,82 @@ async function startInlineAgentIfNeeded(
   startOwnedInlineAgentLoop(payload);
 }
 
+function beginPendingInputForTool(call: ToolCall): void {
+  if (pendingInputOwner || call.source?.trigger !== 'manual_chat') return;
+  const sourceRequestId = call.source.requestId;
+  const chatSessionId = call.source.chatSessionId;
+  const authorization = getToolAuthorizationForCall(call);
+  if (!sourceRequestId || !chatSessionId || !authorization || chatSessionId !== getCurrentChatSessionId()) return;
+  const continuable = selectContinuableToolDescriptors(authorization.descriptors).some((descriptor) =>
+    descriptor.id === call.descriptorId || descriptor.name === call.name || descriptor.invocationName === call.name);
+  if (!continuable) return;
+  acquirePendingInputOwner(toolAuthorizationRequestAliases.get(sourceRequestId) ?? sourceRequestId, chatSessionId);
+}
+
+function releasePendingInputOwner(owner: NonNullable<typeof pendingInputOwner>, restoreDraft = true): void {
+  owner.session.dispose(restoreDraft && Boolean(inlineAgentCapabilityScope?.active)
+    && getCurrentChatSessionId() === owner.chatSessionId);
+  if (pendingInputOwner === owner) pendingInputOwner = null;
+}
+
+function acquirePendingInputOwner(requestId: string, chatSessionId: string): NonNullable<typeof pendingInputOwner> {
+  if (pendingInputOwner) {
+    if (pendingInputOwner.requestId !== requestId || pendingInputOwner.chatSessionId !== chatSessionId) {
+      throw new Error('The composer already belongs to another request.');
+    }
+    return pendingInputOwner;
+  }
+  const scope = inlineAgentCapabilityScope;
+  const epoch = inlineAgentCapabilityEpoch;
+  if (!promptSendGuard) throw new Error('Document-start input guard is missing.');
+  const inputSession = startPendingInputSession({
+    guard: promptSendGuard,
+    findInputBox: findDeepSeekInputBox,
+    labels: {
+      send: contentT('content.agent.inputSend'), steering: contentT('content.agent.inputSteering'),
+      stop: contentT('content.agent.stop'),
+      steer: contentT('content.agent.inputSteer'), continue: contentT('content.agent.inputContinue'),
+      waiting: contentT('content.agent.inputWaiting'), rejected: contentT('content.agent.inputRejected'),
+      ended: contentT('content.agent.inputEnded'), remove: contentT('content.agent.inputRemove'),
+    },
+    canAccept: () => {
+      if (!scope || !isInlineAgentEpochActive(scope, epoch) || getCurrentChatSessionId() !== chatSessionId) return false;
+      if (getCurrentRoutePendingMultimodalMedia().length > 0) {
+        showContentToast(contentT('content.agent.inputAttachments'), 'warning');
+        return false;
+      }
+      return true;
+    },
+    onEnqueued: (result) => reportAgentDiagnostic({ event: 'user_input_queued', stage: 'content',
+      requestId, chatSessionId, ok: result.ok,
+      ...(result.ok ? { inputChars: result.entry.text.length, inputSeq: result.entry.seq } : { reason: 'user_input_rejected' }) }),
+    onIntercept: (inputSource, ok) => reportAgentDiagnostic({ event: 'user_input_intercepted', stage: 'content',
+      requestId, chatSessionId, inputSource, ok }),
+    onStop: (stopNative) => {
+      const owner = pendingInputOwner;
+      if (!owner || owner.requestId !== requestId) return;
+      owner.stopRequested = true;
+      owner.session.closeAdmission();
+      if (!owner.running) stopNative();
+      stopInlineAgent();
+    },
+  });
+  pendingInputOwner = { session: inputSession, requestId, chatSessionId, running: false, stopRequested: false };
+  reportAgentDiagnostic({ event: 'composer_owned', stage: 'content', requestId, chatSessionId,
+    candidateCount: document.querySelectorAll('[data-dpp-agent-send]').length });
+  return pendingInputOwner;
+}
+
 function startOwnedInlineAgentLoop(payload: InlineAgentStartPayload): void {
-  const task = startInlineAgentLoop(payload).catch((error) => {
+  if (!payload.capabilityScopeRequestId) throw new Error('Request identity is missing for pending input.');
+  const owner = acquirePendingInputOwner(payload.capabilityScopeRequestId, payload.chatSessionId);
+  owner.running = true;
+  const task = startInlineAgentLoop(payload, owner.session).catch((error) => {
     reportAgentDiagnostic({ event: 'loop_finished', stage: 'content', reason: 'startup_failed',
       loopId: payload.loopId, requestId: payload.capabilityScopeRequestId });
     console.error("[DeepSeek++] inline agent loop failed", error);
+  }).finally(() => {
+    releasePendingInputOwner(owner);
   });
   pendingInlineAgentLoopTasks.add(task);
   void task.then(() => {
@@ -4804,7 +4929,9 @@ function findInlineAgentLiveTarget(
  * user sends a follow-up message while a previous agent is still running
  * (issue #298).
  */
-function isInlineAgentRunning(): boolean {
+function isInlineAgentRunning(startingRequestId?: string): boolean {
+  if (pendingInputOwner?.session.active()
+    && (pendingInputOwner.running || pendingInputOwner.requestId !== startingRequestId)) return true;
   const controller = activeAgentAbort;
   return controller !== null && !controller.signal.aborted;
 }
@@ -4877,13 +5004,17 @@ function stopInlineAgent(reason: 'user_stop' | 'lifecycle_stop' = 'user_stop'): 
 
 async function startInlineAgentLoop(
   payload: InlineAgentStartPayload,
+  inputSession: PendingInputSession,
 ): Promise<void> {
+  const visibilityScope = inlineAgentCapabilityScope;
+  const visibilityEpoch = inlineAgentCapabilityEpoch;
   // B2: the caller may pre-select a model backend; otherwise auto-select the
   // official API when an official API key is configured (same semantics as
   // the sidepanel chat). No key → the released web backend.
   if (!payload.modelBackend) {
     payload.modelBackend = (await getDeepSeekApiKey()) ? "official-api" : "web";
   }
+  if (pendingInputOwner?.session === inputSession && pendingInputOwner.stopRequested) return;
   // Abort any previously running loop AND tear down its panel synchronously
   // before mounting the new one. Previously the old panel stayed in the DOM
   // until the aborted stream settled, so two agent panels briefly raced
@@ -4935,6 +5066,7 @@ async function startInlineAgentLoop(
 
   const terminalTasks: Promise<boolean>[] = [];
   const post = (type: string, data: unknown) => {
+    if (type === 'AGENT_LOOP_COMPLETE' || type === 'AGENT_LOOP_ERROR') inputSession.closeAdmission();
     const terminalTask = handleInlineAgentLoopEvent(
       type,
       data,
@@ -4985,7 +5117,27 @@ async function startInlineAgentLoop(
         ],
       },
       { post, executeTool, signal: abort.signal,
-        onDiagnostic: (event) => reportAgentDiagnostic({ ...event, stage: 'loop' }) },
+        pendingInput: inputSession.queue,
+        onInputPause: (state) => {
+          if (inlineAgentLoopId !== payload.loopId || !inlineAgentContainer) return;
+          inputSession.setPaused(state.paused);
+          if (state.paused) {
+            stopAgentConsoleTimer();
+            renderTerminalAgentConsoleHeader(inlineAgentContainer, 'paused', state.stepIndex, state.totalTools, state.notice);
+            // This pause still owns the run and authorization; Stop must remain available.
+            const stopButton = inlineAgentContainer.querySelector<HTMLElement>('.dpp-agent-stop-btn');
+            if (stopButton) stopButton.hidden = false;
+          } else {
+            startAgentConsoleTimer();
+          }
+        },
+        onDiagnostic: (event) => reportAgentDiagnostic({ ...event, stage: 'loop' }),
+        onContinuationMessage: (messageId, userInput) => {
+          if (!visibilityScope || !isInlineAgentEpochActive(visibilityScope, visibilityEpoch)
+            || getCurrentChatSessionId() !== payload.chatSessionId) return;
+          ownedContinuationRequestMessageIds.set(String(messageId), userInput.join('\n\n'));
+          hideInlineAgentContinuationMessages(document);
+        } },
     );
     if (terminalTasks.length > 0) {
       const terminalResults = await Promise.all(terminalTasks);
@@ -5002,7 +5154,10 @@ async function startInlineAgentLoop(
   // Reload only after the terminal trace write and authorization teardown have
   // both settled. The new document then reads the real DeepSeek history; no
   // synthetic request, XHR lifecycle, or local response graph is involved.
-  if (shouldReloadNativeHistory) reloadInlineAgentNativeHistory();
+  // Never discard admitted input or an unsent draft during history handoff.
+  if (shouldReloadNativeHistory && inputSession.queue.size() === 0 && !getPromptTextarea()?.value.trim()) {
+    reloadInlineAgentNativeHistory();
+  }
 }
 
 function handleInlineAgentLoopEvent(
@@ -6045,6 +6200,7 @@ function handleToolBlockRouteChange() {
   toolBlockRouteKey = nextRouteKey;
   restoredToolRecords.clear();
   pendingRestoredToolRecordIds.clear();
+  ownedContinuationRequestMessageIds.clear();
   agentAnchorDiagnosticStates.clear();
   restoredInlineAgentTraces.clear();
   pendingRestoredInlineAgentTraceIds.clear();
@@ -6074,6 +6230,9 @@ function handleToolBlockRouteChange() {
 }
 
 function handleContentNavigation(): void {
+  if (pendingInputOwner && !pendingInputOwner.running && pendingInputOwner.chatSessionId !== getCurrentChatSessionId()) {
+    releasePendingInputOwner(pendingInputOwner, false);
+  }
   if (tokenSpeedCapabilityScope?.active) handleTokenSpeedRouteChange();
   if (toolCapabilityScope?.active) handleToolBlockRouteChange();
   window.dispatchEvent(new Event("dpp:navigation"));
@@ -8626,7 +8785,7 @@ function containsToolMarker(text: string | null | undefined): boolean {
 
 function containsCleanableText(text: string | null | undefined): boolean {
   if (typeof text !== "string" || !text) return false;
-  if (isInlineAgentContinuationRenderedText(text)) return true;
+  if (text.includes(INLINE_AGENT_CONTINUATION_PLACEHOLDER)) return true;
   if (containsInternalPromptMarker(text)) return true;
   if (text.includes("<task_complete>") || text.includes("</task_complete>"))
     return true;
@@ -8683,7 +8842,7 @@ function startInlineAgentContinuationMessageHider(
         });
         return (
           restoreAction.schedulePendingRender ||
-          mutations.some(mutationMayContainInlineAgentContinuation)
+          mutations.some(mutationMayAffectContinuationVisibility)
         );
       },
       handle(mutations) {
@@ -8696,15 +8855,8 @@ function startInlineAgentContinuationMessageHider(
           requeueRestoredInlineAgentTracesForCurrentRoute();
         const roots = new Set<ParentNode>();
         for (const mutation of mutations) {
-          if (mutation.type === "characterData") {
-            const parent = mutation.target.parentElement;
-            if (isInlineAgentContinuationRenderedText(parent?.textContent)) {
-              const root = parent?.closest(".ds-message") ?? parent;
-              if (root) roots.add(root);
-            }
-            continue;
-          }
-
+          const target = mutation.target instanceof Element ? mutation.target : mutation.target.parentElement;
+          if (target) roots.add(target.closest('.ds-message') ?? target);
           for (const node of mutation.addedNodes) {
             if (node instanceof Element) roots.add(node);
           }
@@ -8732,53 +8884,14 @@ function stopInlineAgentContinuationMessageHider(): void {
   }
 }
 
-function mutationMayContainInlineAgentContinuation(
-  mutation: MutationRecord,
-): boolean {
-  if (mutation.type === "characterData") {
-    return isInlineAgentContinuationRenderedText(mutation.target.textContent);
-  }
-  return [...mutation.addedNodes].some((node) =>
-    nodeMatchesOrContains(node, ".ds-message"),
-  );
-}
-
 function hideInlineAgentContinuationMessages(root: ParentNode) {
-  const messages = getInlineAgentContinuationMessageCandidates(root);
-  for (const message of messages) {
-    if (!isInlineAgentContinuationRenderedText(message.textContent)) continue;
-    message.setAttribute("data-dpp-hidden-inline-agent-continuation", "true");
-    message.style.display = "none";
-  }
-}
-
-function isInlineAgentContinuationRenderedText(
-  text: string | null | undefined,
-): boolean {
-  if (typeof text !== "string" || !text) return false;
-  // isInlineAgentContinuationStructure (tags only) is a strict superset of
-  // isInlineAgentContinuationPrompt (tags + keywords), so the keyword check
-  // is redundant here — the placeholder covers the history-restored case and
-  // the structural check covers the live-rendered case.
-  return (
-    text.includes(INLINE_AGENT_CONTINUATION_PLACEHOLDER) ||
-    isInlineAgentContinuationStructure(text)
-  );
-}
-
-function getInlineAgentContinuationMessageCandidates(
-  root: ParentNode,
-): HTMLElement[] {
-  const messages: HTMLElement[] = [];
-  if (root instanceof HTMLElement && root.matches(".ds-message")) {
-    messages.push(root);
-  }
-  if ("querySelectorAll" in root) {
-    messages.push(
-      ...Array.from(root.querySelectorAll<HTMLElement>(".ds-message")),
-    );
-  }
-  return messages;
+  reconcileContinuationVisibility(root, ownedContinuationRequestMessageIds, (message, decision) => {
+    const identity = readAssistantMessageIdentity(message);
+    reportAgentDiagnostic({ event: 'message_visibility', stage: 'content',
+      reason: decision.reason, hidden: decision.hidden,
+      ...(decision.userText === undefined ? {} : { inputChars: decision.userText.length }),
+      messageId: identity ? Number(identity.id) : undefined });
+  });
 }
 
 function getToolCleanupRoots(): Element[] {

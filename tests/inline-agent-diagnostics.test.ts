@@ -24,6 +24,13 @@ function response(text: string) {
   };
 }
 describe('inline loop diagnostic decisions', () => {
+  it('reports the native continuation request id separately from the assistant id', async () => {
+    mocks.submit.mockImplementation(response('Done.'));
+    const onContinuationMessage = vi.fn();
+    await runInlineAgentLoop(payload, { post: vi.fn(), executeTool: vi.fn(), signal: new AbortController().signal,
+      onContinuationMessage });
+    expect(onContinuationMessage).toHaveBeenCalledExactlyOnceWith(2, []);
+  });
   beforeEach(() => { mocks.submit.mockReset(); });
   it.each([
     ['secret-answer', 'natural_answer'],

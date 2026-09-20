@@ -46,7 +46,7 @@ describe('content tool block styles', () => {
     expect(source).not.toContain('body.dpp-theme-dark .dpp-tool-block-item { color: rgb(200, 200, 200); }');
   });
 
-  it('mounts inline agent output after DeepSeek final answer content instead of the reasoning block', () => {
+  it('mounts inline agent output in the bound message response host instead of the reasoning block', () => {
     const path = join(process.cwd(), 'entrypoints/content.ts');
     const source = readFileSync(path, 'utf8');
 
@@ -55,9 +55,9 @@ describe('content tool block styles', () => {
     expect(source).toContain('思考过程');
     expect(source).toContain('REASONING_HOST_ANCESTOR_SCAN_DEPTH');
     expect(source).toContain('countContentHosts(ancestor) === 1');
-    expect(source).toMatch(/function mountInlineAgentContainer\(\s*message: Element,\s*container: HTMLElement,?\s*\): void/);
-    expect(source).toMatch(/inlineAgentContainerObserver\.observe\(message, \{\s*childList: true,\s*subtree: true,?\s*\}\);/);
-    expect(source).not.toContain('inlineAgentContainerObserver.observe(responseHost, { childList: true });');
+    expect(source).toContain('placeInlineAgentContainer(trace.anchorMessageId, message, getAssistantResponseHost(message), container)');
+    expect(source).toContain('reconcileLiveInlineAgentContainer();');
+    expect(source).not.toContain('inlineAgentContainerObserver');
   });
 
   it('scopes task_complete cleanup to assistant body text outside code blocks', () => {
@@ -89,9 +89,11 @@ describe('content tool block styles', () => {
 
     expect(source).toContain('startInlineAgentContinuationMessageHider(scope, mutationHub);');
     expect(source).toContain('INLINE_AGENT_CONTINUATION_PLACEHOLDER');
-    expect(source).toContain('isInlineAgentContinuationStructure(text)');
+    expect(source).toContain('reconcileContinuationVisibility(root, ownedContinuationRequestMessageIds');
+    expect(source).not.toContain('isInlineAgentContinuationRenderedText');
     expect(source).toContain('hideInlineAgentContinuationMessages(root);');
-    expect(source).toContain('message.style.display = "none";');
+    const visibility = readFileSync(join(process.cwd(), 'core/inline-agent/continuation-visibility.ts'), 'utf8');
+    expect(visibility).toContain("message.style.display = 'none'");
     expect(source).toContain("data-dpp-hidden-inline-agent-continuation");
   });
 

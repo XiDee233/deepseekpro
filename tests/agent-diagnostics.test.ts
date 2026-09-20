@@ -16,6 +16,11 @@ const context = createRuntimeMessageContext({ id: 'test-extension', url: 'https:
 }, { runtimeId: 'test-extension', extensionOrigin: 'chrome-extension://test-extension', deepSeekOrigin: 'https://chat.deepseek.com' });
 
 describe('metadata-only agent diagnostics', () => {
+  it('records visibility decisions without including message text', () => {
+    expect(decodeAgentDiagnosticPayload({ event: 'message_visibility', stage: 'content',
+      messageId: 42, hidden: false, reason: 'assistant_visible', observedAt: 1, buildId: 'test-build',
+    })).toMatchObject({ messageId: 42, hidden: false });
+  });
   it('accepts render identity evidence without requiring response text', () => {
     expect(decodeAgentDiagnosticPayload({ event: 'agent_ui_mounted', stage: 'content',
       observedAt: 1, buildId: 'test-build', loopId: 'loop-1', anchorMessageId: 12,
@@ -103,4 +108,29 @@ describe('metadata-only agent diagnostics', () => {
     expect(value.httpStatus).toBe(httpStatus);
     expect(JSON.stringify(value)).not.toContain('secret');
   });
+});
+
+it('validates owned-composer diagnostics with only bounded event metadata', () => {
+  for (const inputSource of ['keyboard', 'button', 'form'] as const) {
+    expect(decodeAgentDiagnosticPayload(stampAgentDiagnostic({
+      event: 'user_input_intercepted', stage: 'content', inputSource, ok: false,
+    }))).toMatchObject({ event: 'user_input_intercepted', inputSource, ok: false });
+  }
+  expect(decodeAgentDiagnosticPayload(stampAgentDiagnostic({ event: 'composer_owned', candidateCount: 1 }))).toMatchObject({ candidateCount: 1 });
+  expect(() => decodeAgentDiagnosticPayload({ ...stampAgentDiagnostic({ event: 'composer_owned' }), inputSource: 'arbitrary' })).toThrow();
+});
+
+it('accepts replacement and send-route metadata but rejects arbitrary routes', () => {
+  expect(decodeAgentDiagnosticPayload(stampAgentDiagnostic({ event: 'send_button_replaced', candidateCount: 1, addedCount: 1, removedCount: 1 }))).toMatchObject({ candidateCount: 1 });
+  for (const inputRoute of ['native', 'queue', 'blocked'] as const) {
+    expect(decodeAgentDiagnosticPayload(stampAgentDiagnostic({ event: 'composer_send_routed', inputSource: 'button', inputRoute }))).toMatchObject({ inputRoute });
+  }
+  expect(() => decodeAgentDiagnosticPayload({ ...stampAgentDiagnostic({ event: 'composer_send_routed' }), inputRoute: 'arbitrary' })).toThrow();
+});
+
+it('accepts transport-bound input sequence and server receipt metadata', () => {
+  const payload = stampAgentDiagnostic({ event: 'user_input_accepted', inputSeq: 3,
+    nativeRequestMessageId: 51, assistantMessageId: 52, requestCount: 2, attempt: 1 });
+  expect(decodeAgentDiagnosticPayload(payload)).toMatchObject({ inputSeq: 3, nativeRequestMessageId: 51 });
+  expect(() => decodeAgentDiagnosticPayload({ ...payload, inputSeq: -1 })).toThrow();
 });
