@@ -843,7 +843,7 @@ export function updateStepStreamText(step: HTMLElement, visibleText: string): vo
   }
   body.setAttribute('data-dpp-raw-text', visibleText);
   body.innerHTML = renderAgentStreamText(visibleText);
-  followAgentStreamScroll(step);
+
 }
 
 export function updateStepStatus(step: HTMLElement, status: string): void {
@@ -1053,49 +1053,6 @@ export function renderAgentStreamText(text: string): string {
   return renderInlineMarkdown(text, {
     omitFencedCodeLanguages: AGENT_NATIVE_DELIVERABLE_CODE_LANGS,
   });
-}
-
-// ---------------------------------------------------------------------------
-// Page scroll follow: while the agent streams, the chat scroller stays pinned
-// to the bottom as long as the reader is already there; a reader who scrolled
-// up is never yanked down. The scroller is discovered once by walking up from
-// the stream and cached.
-// ---------------------------------------------------------------------------
-const AGENT_STREAM_SCROLL_FOLLOW_TOLERANCE_PX = 24;
-let cachedAgentStreamScroller: HTMLElement | null | undefined;
-
-function getAgentStreamScroller(stream: HTMLElement): HTMLElement | null {
-  const cached = cachedAgentStreamScroller;
-  if (cached !== undefined && cached !== null && cached.isConnected) return cached;
-  let el: HTMLElement | null = stream.parentElement;
-  while (el && el !== document.documentElement) {
-    if (el.scrollHeight > el.clientHeight + 1) {
-      const style = getComputedStyle(el);
-      if (/(auto|scroll)/.test(style.overflowY)) {
-        cachedAgentStreamScroller = el;
-        return el;
-      }
-    }
-    el = el.parentElement;
-  }
-  cachedAgentStreamScroller = null;
-  return null;
-}
-
-function followAgentStreamScroll(stream: HTMLElement): void {
-  const scroller = getAgentStreamScroller(stream);
-  if (!scroller) return;
-  const distanceToBottom = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
-  if (distanceToBottom > AGENT_STREAM_SCROLL_FOLLOW_TOLERANCE_PX) return;
-  scroller.scrollTop = scroller.scrollHeight;
-}
-
-/**
- * Pins the chat scroller to the bottom after new stream content (narration
- * segments, appended answer segments) while the reader is already near it.
- */
-export function followAgentStreamBottom(stream: HTMLElement): void {
-  followAgentStreamScroll(stream);
 }
 
 // ---------------------------------------------------------------------------

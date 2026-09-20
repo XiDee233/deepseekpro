@@ -13,6 +13,7 @@ const code = transform(source.slice(declaration.start!, declaration.end!), { tra
 const load = new Function('dependencies', `
   const { reportAgentDiagnostic, isInlineAgentResponseComplete, isInlineAgentRunning,
     selectContinuableToolExecutions, showContentToast, contentT, activeToolAuthorizations } = dependencies;
+  const pendingInputOwner = null;
   ${code}
   return startInlineAgentIfNeeded;
 `) as (dependencies: Record<string, unknown>) => (...args: unknown[]) => Promise<void>;
@@ -41,4 +42,23 @@ describe('content continuation diagnostics', () => {
       expect(JSON.stringify(report.mock.calls)).not.toContain('secret');
     },
   );
+});
+
+it('does not synthesize successful Shell execution from a historical call alone', () => {
+  const declaration = parseTypeScriptSource('entrypoints/content.ts', source).body.find(
+    node => node.type === 'FunctionDeclaration' && node.id?.name === 'summarizeRestoredToolCall',
+  )!;
+  const code = transform(source.slice(declaration.start!, declaration.end!), { transforms: ['typescript'] }).code;
+  const summarize = new Function(`
+    const hasRestoreOmittedPayload = () => false;
+    const createRestoredArtifactToolResult = () => null;
+    const currentContentLocale = 'en';
+    const contentT = key => key;
+    ${code}
+    return summarizeRestoredToolCall;
+  `)();
+  for (const name of ['shell_status', 'shell_exec']) {
+    expect(summarize({ name, payload: {} })).toMatchObject({ ok: false,
+      summary: 'content.toolBlock.summaries.unconfirmed', error: { code: 'tool_result_unconfirmed', retryable: false } });
+  }
 });

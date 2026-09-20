@@ -197,6 +197,9 @@ describe('pending cards outside the composer', () => {
       const queued = session.queue.list()[0];
       expect(queued.delivery).toBe('queue');
       expect(dock.style.display).toBe('flex');
+      expect(dock.nextElementSibling).toBe(box);
+      expect(dock.style.position).toBe('');
+      expect(dock.style.bottom).toBe('');
       dock.querySelector<HTMLButtonElement>('[data-dpp-steer]')!.click();
       expect(session.queue.list()[0]).toEqual({ ...queued, delivery: 'steer' });
       expect(dock.querySelector<HTMLButtonElement>('[data-dpp-steer]')!.disabled).toBe(true);
@@ -216,4 +219,46 @@ describe('pending cards outside the composer', () => {
       expect(session.queue.list()[0]).toMatchObject({ text: 'draft', delivery: 'steer' });
     } finally { session.dispose(); dom.cleanup(); }
   });
+});
+
+it('keeps task activity visible with an empty input queue and identifies outstanding tools', () => {
+  vi.useFakeTimers(); const dom = buildComposer(); let timestamp = 0;
+  const host = document.createElement('div'); host.className = 'dpp-agent-status-line'; document.body.append(host);
+  const session = startPendingInputSession({ now: () => timestamp, findActivityAnchor: () => host });
+  try {
+    const activity = document.querySelector<HTMLElement>('[data-dpp-task-activity]')!;
+    expect(activity.textContent).toContain('Preparing');
+    const statusDone = session.trackTool('req:status', 'shell_status');
+    const execDone = session.trackTool('req:exec', 'shell_exec');
+    expect(activity.textContent).toContain('shell_status / shell_exec');
+    timestamp = 18000; vi.advanceTimersByTime(1000);
+    expect(activity.textContent).toContain('18s');
+    session.setActivity('stopping'); session.closeAdmission();
+    expect(activity.dataset.phase).toBe('stopping');
+    expect(activity.textContent).toContain('waiting for active work');
+    statusDone(); expect(activity.textContent).not.toContain('shell_status');
+    expect(activity.textContent).toContain('shell_exec'); execDone();
+    session.dispose(); expect(document.querySelector('[data-dpp-task-activity]')).toBeNull();
+    expect(vi.getTimerCount()).toBe(0);
+  } finally { session.dispose(); host.remove(); dom.cleanup(); vi.useRealTimers(); }
+});
+
+it('adds activity after the token badge while preserving both the badge and original header', () => {
+  const dom = buildComposer();
+  const header = document.createElement('div'); header.textContent = 'Running · step 2 · 3 tools · 16s';
+  const badge = document.createElement('span'); badge.textContent = '0 tok'; document.body.append(header, badge);
+  const session = startPendingInputSession({ findActivityAnchor: () => badge });
+  try {
+    const activity = document.querySelector<HTMLElement>('[data-dpp-task-activity]')!;
+    expect(badge.nextSibling).toBe(activity);
+    expect(activity.classList.contains('dpp-token-speed-badge')).toBe(true);
+    expect(activity.style.font).toBe('');
+    expect(activity.style.border).toBe('');
+    expect(badge.hasAttribute('data-dpp-activity-anchor')).toBe(false);
+    expect(badge.textContent).toBe('0 tok');
+    expect(header.textContent).toBe('Running · step 2 · 3 tools · 16s');
+    expect(activity.closest('.dpp-agent-pending-input')).toBeNull();
+    session.dispose(); expect(badge.hasAttribute('data-dpp-activity-anchor')).toBe(false);
+    expect(badge.textContent).toBe('0 tok');
+  } finally { session.dispose(); header.remove(); badge.remove(); dom.cleanup(); }
 });

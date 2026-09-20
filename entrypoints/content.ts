@@ -86,6 +86,7 @@ import { readDeepSeekChatSessionId } from "../core/deepseek/chat-session";
 import { createUsageProgressWriteCoordinator } from "../core/usage/progress-write-coordinator";
 import { runInlineAgentLoop } from "../core/inline-agent/loop";
 import { startPendingInputSession, type PendingInputSession } from "../core/inline-agent/pending-input-session";
+import { createChatScrollFollower } from "../core/ui/chat-scroll-follow";
 import { createPromptSendGuard, type PromptSendGuard } from "../core/ui/prompt-send-interception";
 import { waitForInlineAgentLiveTarget } from "../core/inline-agent/live-target-wait";
 import { reconcileContinuationVisibility, mutationMayAffectContinuationVisibility } from "../core/inline-agent/continuation-visibility";
@@ -144,7 +145,6 @@ import {
   finalizePendingAgentToolEntries,
   collapseAllAgentToolGroups,
   autoCollapseCompletedReasoningHost,
-  followAgentStreamBottom,
   renderAgentStreamText,
   adoptReasoningBlock,
   hydrateAgentStepCodeRunners,
@@ -900,6 +900,15 @@ function createContentCapabilityControllers(): readonly ContentCapabilityControl
       (scope) => mutationHub.start(scope),
       () => mutationHub.stop(),
     ),
+    createDomCapability("chat-scroll-follow", (scope) => {
+      const follower = createChatScrollFollower();
+      follower.start();
+      scope.addCleanup("cleanup", () => follower.stop());
+      scope.addCleanup("observer", mutationHub.subscribe({
+        matches: (mutations) => mutations.some((mutation) => mutation.type !== 'attributes'),
+        handle: () => follower.contentChanged(),
+      }));
+    }, () => {}),
     createDomCapability(
       "token-speed",
       (scope) => startTokenSpeedCapability(scope, mutationHub),
@@ -4758,12 +4767,18 @@ function acquirePendingInputOwner(requestId: string, chatSessionId: string): Non
   const inputSession = startPendingInputSession({
     guard: promptSendGuard,
     findInputBox: findDeepSeekInputBox,
+    findActivityAnchor: () => tokenSpeedEl?.isConnected ? tokenSpeedEl : null,
+    isVisible: () => getCurrentChatSessionId() === chatSessionId,
     labels: {
       send: contentT('content.agent.inputSend'), steering: contentT('content.agent.inputSteering'),
       stop: contentT('content.agent.stop'),
       steer: contentT('content.agent.inputSteer'), continue: contentT('content.agent.inputContinue'),
       waiting: contentT('content.agent.inputWaiting'), rejected: contentT('content.agent.inputRejected'),
       ended: contentT('content.agent.inputEnded'), remove: contentT('content.agent.inputRemove'),
+      preparing: contentT('content.agent.activityPreparing'), requesting: contentT('content.agent.activityRequesting'),
+      responding: contentT('content.agent.activityResponding'), stopping: contentT('content.agent.activityStopping'),
+      toolWait: (name, count) => contentT('content.agent.activityToolWait', { name, count }),
+      elapsed: (seconds) => contentT('content.agent.activityElapsed', { seconds }),
     },
     canAccept: () => {
       if (!scope || !isInlineAgentEpochActive(scope, epoch) || getCurrentChatSessionId() !== chatSessionId) return false;
@@ -4782,6 +4797,7 @@ function acquirePendingInputOwner(requestId: string, chatSessionId: string): Non
       const owner = pendingInputOwner;
       if (!owner || owner.requestId !== requestId) return;
       owner.stopRequested = true;
+      owner.session.setActivity('stopping');
       owner.session.closeAdmission();
       if (!owner.running) stopNative();
       stopInlineAgent();
@@ -4960,6 +4976,7 @@ function teardownInlineAgentPanel(): void {
 }
 
 function stopInlineAgent(reason: 'user_stop' | 'lifecycle_stop' = 'user_stop'): void {
+  pendingInputOwner?.session.setActivity('stopping');
   reportAgentDiagnostic({ event: 'loop_stop_requested', stage: 'content', reason,
     loopId: inlineAgentLoopId ?? undefined });
   stopAgentConsoleTimer();
@@ -5066,6 +5083,8 @@ async function startInlineAgentLoop(
 
   const terminalTasks: Promise<boolean>[] = [];
   const post = (type: string, data: unknown) => {
+    if (type === 'AGENT_STEP_STARTED') inputSession.setActivity('preparing');
+    if (type === 'AGENT_STREAM_CHUNK' || type === 'AGENT_REASONING_CHUNK') inputSession.setActivity('responding');
     if (type === 'AGENT_LOOP_COMPLETE' || type === 'AGENT_LOOP_ERROR') inputSession.closeAdmission();
     const terminalTask = handleInlineAgentLoopEvent(
       type,
@@ -5076,6 +5095,8 @@ async function startInlineAgentLoop(
   };
 
   const executeTool = async (call: ToolCall): Promise<ToolExecutionRecord> => {
+    const finishActivity = inputSession.trackTool(`${capabilityScopeRequestId}:${call.id}`, call.name);
+    try {
     const enrichedCall: ToolCall = ensureToolCallId({
       ...call,
       source: {
@@ -5102,6 +5123,7 @@ async function startInlineAgentLoop(
       provider: result.provider ?? call.provider,
       descriptorId: result.descriptorId ?? call.descriptorId,
     };
+    } finally { finishActivity(); }
   };
 
   let shouldReloadNativeHistory = false;
@@ -5131,7 +5153,12 @@ async function startInlineAgentLoop(
             startAgentConsoleTimer();
           }
         },
-        onDiagnostic: (event) => reportAgentDiagnostic({ ...event, stage: 'loop' }),
+        onDiagnostic: (event) => {
+          if (event.event === 'model_request') inputSession.setActivity('preparing');
+          if (event.event === 'model_request_dispatched') inputSession.setActivity('requesting');
+          if (event.event === 'turn_finished') inputSession.setActivity('preparing');
+          reportAgentDiagnostic({ ...event, stage: 'loop' });
+        },
         onContinuationMessage: (messageId, userInput) => {
           if (!visibilityScope || !isInlineAgentEpochActive(visibilityScope, visibilityEpoch)
             || getCurrentChatSessionId() !== payload.chatSessionId) return;
@@ -5627,9 +5654,6 @@ function appendInlineAgentNarration(
 
   narration.appendChild(body);
   stream.appendChild(narration);
-  // Keep the scroller pinned while the final answer streams in (the reader is
-  // watching the bottom; a scrolled-up reader is never yanked).
-  followAgentStreamBottom(stream);
 }
 
 function handleAgentLoopError(msg: InlineAgentLoopErrorMsg): void {
@@ -5675,6 +5699,8 @@ function handleAgentLoopError(msg: InlineAgentLoopErrorMsg): void {
 }
 
 function runToolExecution(call: ToolCall): Promise<ToolCardResult> {
+  const finishActivity = pendingInputOwner?.chatSessionId === call.source?.chatSessionId
+    ? pendingInputOwner?.session.trackTool(`${call.source?.requestId}:${call.id}`, call.name) : undefined;
   const session = getOrCreateActiveToolBlockSession(call);
   if (activeStreamingToolCount > 0) activeStreamingToolCount--;
   const task = (async () => {
@@ -5704,7 +5730,7 @@ function runToolExecution(call: ToolCall): Promise<ToolCardResult> {
       observeReportedPersistence(persistToolBlockSession(session));
       showPetResult(result);
       return result;
-    });
+    }).finally(() => finishActivity?.());
 
   pendingToolExecutionTasks.add(task);
   const requestId = call.source?.requestId;
@@ -8425,69 +8451,12 @@ function summarizeRestoredToolCall(call: ToolCall): ToolCardResult {
     };
   }
 
-  const payload = call.payload as Record<string, unknown>;
-  const detail = getRestoredPayloadDetail(payload);
-
-  switch (call.name) {
-    case "memory_save":
-      return {
-        ok: true,
-        summary: contentT("content.toolBlock.summaries.saved"),
-        detail,
-      };
-    case "memory_update":
-      return {
-        ok: true,
-        summary: contentT("content.toolBlock.summaries.updated"),
-        detail,
-      };
-    case "memory_delete":
-      return {
-        ok: true,
-        summary: contentT("content.toolBlock.summaries.deleted"),
-        detail,
-      };
-    case "web_search":
-      return {
-        ok: true,
-        summary: contentT("content.toolBlock.summaries.searched"),
-        detail: String(
-          typeof call.payload.query === "string" ? call.payload.query : "",
-        ),
-      };
-    case "web_fetch":
-      return {
-        ok: true,
-        summary: contentT("content.toolBlock.summaries.fetched"),
-        detail: String(
-          typeof call.payload.url === "string" ? call.payload.url : "",
-        ),
-      };
-    case "artifact_create":
-    case "artifact_bundle_create":
-      return {
-        ok: true,
-        summary: contentT("content.toolBlock.summaries.executed"),
-        detail,
-      };
-    default:
-      return {
-        ok: true,
-        summary: contentT("content.toolBlock.summaries.executed"),
-        detail,
-      };
-  }
-}
-
-function getRestoredPayloadDetail(payload: Record<string, unknown>): string {
-  const primary =
-    payload.filename ?? payload.name ?? payload.content ?? payload.id ?? "";
-  if (typeof primary === "string") return primary;
-
-  const preview = getRestoreTruncatedPreview(primary);
-  if (preview) return preview;
-
-  return "";
+  return {
+    ok: false,
+    summary: contentT("content.toolBlock.summaries.unconfirmed"),
+    detail: contentT("content.toolBlock.restoredResultUnconfirmed"),
+    error: { code: 'tool_result_unconfirmed', message: contentT("content.toolBlock.restoredResultUnconfirmed"), retryable: false },
+  };
 }
 
 function hasRestoreOmittedPayload(value: unknown): boolean {
@@ -8505,12 +8474,6 @@ function hasRestoreOmittedPayload(value: unknown): boolean {
   }
 
   return Object.values(record).some(hasRestoreOmittedPayload);
-}
-
-function getRestoreTruncatedPreview(value: unknown): string {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return "";
-  const preview = (value as Record<string, unknown>).preview;
-  return typeof preview === "string" ? preview : "";
 }
 
 function getAssistantMessages(): Element[] {

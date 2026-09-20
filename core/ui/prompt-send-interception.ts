@@ -94,7 +94,11 @@ export function createPromptSendGuard(root: Document = document, options: Prompt
   // Applies before the observer runs when React creates a new native node.
   style.textContent = `${[...selectors, ...NATIVE_STOP_SELECTORS.map((selector) => `${selector}:not([data-dpp-agent-send])`)].join(',')}, [${SEND_HIDDEN_ATTRIBUTE}="true"]
     { display:none !important; pointer-events:none !important; }
-    [data-dpp-agent-send][aria-disabled="false"] { pointer-events:auto !important; cursor:pointer; }`;
+    [data-dpp-agent-send][aria-disabled="false"] { pointer-events:auto !important; cursor:pointer; }
+    [data-dpp-agent-owned][aria-disabled="false"] { opacity:1 !important; cursor:pointer !important; }
+    [data-dpp-agent-owned][aria-disabled="false"] * { cursor:pointer !important; }
+    [data-dpp-agent-owned][aria-disabled="true"],
+    [data-dpp-agent-owned][aria-disabled="true"] * { cursor:wait !important; }`;
   const restore = (native: HTMLElement, saved: Replacement) => {
     native.style.setProperty('display', saved.display, saved.priority);
     native.inert = saved.inert;
@@ -126,7 +130,17 @@ export function createPromptSendGuard(root: Document = document, options: Prompt
       if (native.getAttribute(SEND_HIDDEN_ATTRIBUTE) !== 'true') native.setAttribute(SEND_HIDDEN_ATTRIBUTE, 'true');
       if (native.style.display !== 'none' || native.style.getPropertyPriority('display') !== 'important') native.style.setProperty('display', 'none', 'important');
       if (!native.inert) native.inert = true;
-      if (saved.button.className !== native.className) saved.button.className = native.className;
+      const disabled = active ? active.deps.disabled?.() ?? false
+        : native.hasAttribute('disabled') || native.getAttribute('aria-disabled') === 'true';
+      // Retain native appearance, but never inherit the native empty-composer
+      // disabled state while our Stop/Queue action is enabled.
+      const className = active && !disabled
+        ? [...native.classList].filter((name) => name !== 'ds-button--disabled').join(' ')
+        : native.className;
+      if (saved.button.className !== className) saved.button.className = className;
+      if (saved.button.hasAttribute('data-dpp-agent-owned') !== Boolean(active)) {
+        saved.button.toggleAttribute('data-dpp-agent-owned', Boolean(active));
+      }
       if (saved.nativeHTML !== native.innerHTML) {
         saved.nativeHTML = native.innerHTML;
         saved.nativeMarkup = cloneVisual(native).innerHTML;
@@ -148,9 +162,8 @@ export function createPromptSendGuard(root: Document = document, options: Prompt
         saved.renderKey = renderKey;
       }
       if (saved.button.parentElement !== native.parentElement || saved.button.nextSibling !== native) native.before(saved.button);
-      const disabled = active ? active.deps.disabled?.() ?? false
-        : native.hasAttribute('disabled') || native.getAttribute('aria-disabled') === 'true';
-      if (saved.button instanceof HTMLButtonElement && saved.button.disabled !== disabled) saved.button.disabled = disabled;
+      if (saved.button.hasAttribute('disabled') !== disabled) saved.button.toggleAttribute('disabled', disabled);
+      if (saved.button.inert) saved.button.inert = false;
       if (saved.button.getAttribute('aria-disabled') !== String(disabled)) saved.button.setAttribute('aria-disabled', String(disabled));
       if (saved.button.tabIndex !== (disabled ? -1 : 0)) saved.button.tabIndex = disabled ? -1 : 0;
       const label = (wantsStop() ? active?.deps.stopLabel : active?.deps.sendLabel) ?? native.getAttribute('aria-label');

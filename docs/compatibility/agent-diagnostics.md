@@ -183,5 +183,27 @@ for additional text. Stop uses the existing run abort; during first-turn tools
 it stops native generation when available and prevents automatic continuation.
 Button rendering compares the owned render state rather than serialized SVG
 innerHTML. Its observer ignores owned DOM and assistant/tool output, and only
-reconciles composer changes. An empty pending-input dock performs no geometry
-reads. Content diagnostics follow the document's extension-context lifecycle.
+reconciles composer changes. Content diagnostics follow the document's extension-context lifecycle.
+The active input session adds its compact activity indicator immediately after
+the token statistics badge, keeping the original badge visible and unchanged.
+The original agent header retains its step, tool count and total time. Pending
+input cards occupy normal layout space before the composer and do not contain
+the task status indicator.
+First-turn and loop tool promises contribute bounded
+waiting entries; the strip names outstanding tools, counts them, and shows
+elapsed waiting time. Model request and stream events set model-wait/response
+phases. A stop request remains explicitly stopping while work has not settled.
+One session timer updates status text only; positioning is driven by layout and
+navigation events, and all resources are released with the session. This is
+evidence of a pending request, not a heartbeat or proof of remote process liveness.
+Refresh does not recreate a live strip from persisted history. Call-only history
+records without execution results display an unconfirmed result, never synthetic
+success; actual persisted execution results remain authoritative.
+
+Conversation scrolling is owned by one document-lifecycle follower rather than
+individual text renderers. It retains bottom-follow intent across tool rows,
+streamed text and resized content, coalescing updates into animation frames.
+Upward wheel/touch/keyboard scrolling or scrollbar interaction suspends follow;
+scrolling down to the bottom (including the native bottom button) resumes it.
+No scroll is inferred from model/tool state, and teardown removes listeners,
+resize observers and pending frames.

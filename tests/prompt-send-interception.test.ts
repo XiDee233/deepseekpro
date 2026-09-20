@@ -487,3 +487,30 @@ it('ignores a burst of tool-output mutations without scanning or repositioning t
     expect(scans).not.toHaveBeenCalled(); expect(onRefresh).not.toHaveBeenCalled();
   } finally { scans.mockRestore(); interception.dispose(); output.remove(); dom.cleanup(); }
 });
+
+it('separates agent-enabled stop styling from the native empty-composer disabled state', () => {
+  const dom = buildDocument({ withButton: false });
+  const native = document.createElement('div'); native.setAttribute('role', 'button'); native.setAttribute('aria-label', 'Send');
+  native.className = 'ds-button ds-button--primary ds-button--disabled';
+  native.setAttribute('aria-disabled', 'true'); native.setAttribute('disabled', '');
+  native.innerHTML = '<div class="ds-button__background"></div><div class="ds-button__icon"></div>';
+  document.body.append(native);
+  const guard = createPromptSendGuard(); guard.start();
+  let closing = false; const onStop = vi.fn();
+  const claim = guard.claim({ onSubmit: () => true, onStop, disabled: () => closing, stopLabel: 'Stop' });
+  try {
+    const clone = document.querySelector<HTMLElement>('[data-dpp-agent-send]')!;
+    expect(clone.classList.contains('ds-button--disabled')).toBe(false);
+    expect(clone.hasAttribute('disabled')).toBe(false);
+    expect(clone.getAttribute('aria-disabled')).toBe('false');
+    expect(clone.hasAttribute('data-dpp-agent-owned')).toBe(true);
+    clone.click(); expect(onStop).toHaveBeenCalledOnce();
+    closing = true; claim.refresh();
+    expect(clone.getAttribute('aria-disabled')).toBe('true');
+    clone.click(); expect(onStop).toHaveBeenCalledOnce();
+    claim.dispose();
+    expect(clone.classList.contains('ds-button--disabled')).toBe(true);
+    expect(clone.hasAttribute('data-dpp-agent-owned')).toBe(false);
+    expect(native.classList.contains('ds-button--disabled')).toBe(true);
+  } finally { claim.dispose(); guard.stop(); native.remove(); dom.cleanup(); }
+});
