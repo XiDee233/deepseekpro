@@ -5329,21 +5329,22 @@ function handleAgentReasoningChunk(msg: InlineAgentReasoningChunkMsg): void {
   const stream = getAgentConsoleBody(inlineAgentContainer);
   const step = inlineAgentCurrentStep;
   const reasoningText = msg.fullText;
-
-  if (step && step.parentElement === stream) {
-    const note = getAgentReasoningNote(step);
-    if (note) updateAgentReasoningNoteElement(note, reasoningText);
-  } else {
-    pendingAgentReasoningByStep.set(msg.stepIndex, reasoningText);
+  pendingAgentReasoningByStep.set(msg.stepIndex, reasoningText);
+  if (step && stream) {
     // Reasoning without any narration text: mount the (textless) step so the
     // note has a home in the stream instead of being silently dropped.
-    if (step && stream && step.parentElement !== stream) {
+    if (step.parentElement !== stream) {
       mountAgentNarration(
         step,
         stream,
         getAgentRendererLabels(),
         reasoningText,
       );
+    }
+    const note = getAgentReasoningNote(step);
+    if (note) {
+      updateAgentReasoningNoteElement(note, reasoningText);
+      pendingAgentReasoningByStep.delete(msg.stepIndex);
     }
   }
 
@@ -5378,7 +5379,10 @@ function renderInlineAgentStreamChunk(msg: InlineAgentStreamChunkMsg): void {
   const pendingReasoning = pendingAgentReasoningByStep.get(msg.stepIndex);
   if (pendingReasoning) {
     const note = getAgentReasoningNote(step);
-    if (note) updateAgentReasoningNoteElement(note, pendingReasoning);
+    if (note) {
+      updateAgentReasoningNoteElement(note, pendingReasoning);
+      pendingAgentReasoningByStep.delete(msg.stepIndex);
+    }
   }
   updateStepStreamText(step, nextText);
   refreshAgentStepCodeRunners(step);
