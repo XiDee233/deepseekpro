@@ -9,14 +9,14 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/zhu1090093659/deepseek-pp/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/zhu1090093659/deepseek-pp?style=flat-square"></a>
-  <a href="https://github.com/zhu1090093659/deepseek-pp/watchers"><img alt="Watchers" src="https://img.shields.io/github/watchers/zhu1090093659/deepseek-pp?style=flat-square"></a>
-  <a href="https://github.com/zhu1090093659/deepseek-pp/network/members"><img alt="Forks" src="https://img.shields.io/github/forks/zhu1090093659/deepseek-pp?style=flat-square"></a>
-  <a href="https://github.com/zhu1090093659/deepseek-pp/issues"><img alt="Issues" src="https://img.shields.io/github/issues/zhu1090093659/deepseek-pp?style=flat-square"></a>
+  <a href="https://github.com/XiDee233/deepseek-pp_Dee/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/XiDee233/deepseek-pp_Dee?style=flat-square"></a>
+  <a href="https://github.com/XiDee233/deepseek-pp_Dee/watchers"><img alt="Watchers" src="https://img.shields.io/github/watchers/XiDee233/deepseek-pp_Dee?style=flat-square"></a>
+  <a href="https://github.com/XiDee233/deepseek-pp_Dee/network/members"><img alt="Forks" src="https://img.shields.io/github/forks/XiDee233/deepseek-pp_Dee?style=flat-square"></a>
+  <a href="https://github.com/XiDee233/deepseek-pp_Dee/issues"><img alt="Issues" src="https://img.shields.io/github/issues/XiDee233/deepseek-pp_Dee?style=flat-square"></a>
 </p>
 
 <p align="center">
-  <a href="https://github.com/zhu1090093659/deepseek-pp/releases"><img alt="Release" src="https://img.shields.io/github/v/release/zhu1090093659/deepseek-pp?style=flat-square&label=release"></a>
+  <a href="https://github.com/XiDee233/deepseek-pp_Dee/releases"><img alt="Release" src="https://img.shields.io/github/v/release/XiDee233/deepseek-pp_Dee?style=flat-square&label=release"></a>
   <a href="https://chromewebstore.google.com/detail/deepseek++/kdmpkkahkhdmdhfkdihkopikgcocbpbf?hl=zh-CN"><img alt="Chrome Web Store" src="https://img.shields.io/badge/Chrome%20Web%20Store-available-16a34a?style=flat-square"></a>
   <a href="#license"><img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-2563eb?style=flat-square"></a>
   <a href="https://chat.deepseek.com"><img alt="DeepSeek" src="https://img.shields.io/badge/DeepSeek-web-4f46e5?style=flat-square"></a>
@@ -32,6 +32,14 @@
   <a href="#1140-release-highlights">1.14.0 Highlights</a>
 </p>
 
+## About This Repository
+
+This repository is an independent DeepSeek++ distribution maintained by **XiDee233** (Dee), derived from [zhu1090093659/deepseek-pp](https://github.com/zhu1090093659/deepseek-pp). Thanks to the upstream author for the excellent work.
+
+The upstream DeepSeek++ project is open source under Apache-2.0. This repository was split from upstream `main` in September 2026 (baseline commit `0a02c72`) and has since been maintained standalone; it no longer tracks upstream. Future feature development, build artifacts, and release cadence are decided here.
+
+Installation steps, build commands, extension ID notes, and release information in this repository therefore refer to this distribution. If you need the original upstream version or its latest progress, please visit the [upstream repository](https://github.com/zhu1090093659/deepseek-pp).
+
 ## Product Positioning
 
 DeepSeek++ is an open-source browser extension for [DeepSeek Web](https://chat.deepseek.com), with support for Chrome, Edge, and Firefox. It turns DeepSeek Web into an AI agent workspace where users can run English or Simplified Chinese UI, MCP tools, image/video multimodal analysis, long-term memory, Skills, system prompt presets, web search, web fetch, conversation export, and scheduled automation in the same browser workflow.
@@ -42,6 +50,7 @@ Language can follow the browser or be set to English or Simplified Chinese. Deep
 
 ## Table of Contents
 
+- [About This Repository](#about-this-repository)
 - [Product Positioning](#product-positioning)
 - [Feature Overview](#feature-overview)
 - [Use Cases](#use-cases)
@@ -1098,8 +1107,8 @@ If you need Shell MCP or local file tools, follow the Shell Native Host instruct
 ### Build from Source
 
 ```bash
-git clone https://github.com/zhu1090093659/deepseek-pp.git
-cd deepseek-pp
+git clone https://github.com/XiDee233/deepseek-pp_Dee.git
+cd deepseek-pp_Dee
 npm install
 npm run build
 ```

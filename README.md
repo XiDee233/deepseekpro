@@ -9,14 +9,14 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/zhu1090093659/deepseek-pp/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/zhu1090093659/deepseek-pp?style=flat-square"></a>
-  <a href="https://github.com/zhu1090093659/deepseek-pp/watchers"><img alt="Watchers" src="https://img.shields.io/github/watchers/zhu1090093659/deepseek-pp?style=flat-square"></a>
-  <a href="https://github.com/zhu1090093659/deepseek-pp/network/members"><img alt="Forks" src="https://img.shields.io/github/forks/zhu1090093659/deepseek-pp?style=flat-square"></a>
-  <a href="https://github.com/zhu1090093659/deepseek-pp/issues"><img alt="Issues" src="https://img.shields.io/github/issues/zhu1090093659/deepseek-pp?style=flat-square"></a>
+  <a href="https://github.com/XiDee233/deepseek-pp_Dee/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/XiDee233/deepseek-pp_Dee?style=flat-square"></a>
+  <a href="https://github.com/XiDee233/deepseek-pp_Dee/watchers"><img alt="Watchers" src="https://img.shields.io/github/watchers/XiDee233/deepseek-pp_Dee?style=flat-square"></a>
+  <a href="https://github.com/XiDee233/deepseek-pp_Dee/network/members"><img alt="Forks" src="https://img.shields.io/github/forks/XiDee233/deepseek-pp_Dee?style=flat-square"></a>
+  <a href="https://github.com/XiDee233/deepseek-pp_Dee/issues"><img alt="Issues" src="https://img.shields.io/github/issues/XiDee233/deepseek-pp_Dee?style=flat-square"></a>
 </p>
 
 <p align="center">
-  <a href="https://github.com/zhu1090093659/deepseek-pp/releases"><img alt="Release" src="https://img.shields.io/github/v/release/zhu1090093659/deepseek-pp?style=flat-square&label=release"></a>
+  <a href="https://github.com/XiDee233/deepseek-pp_Dee/releases"><img alt="Release" src="https://img.shields.io/github/v/release/XiDee233/deepseek-pp_Dee?style=flat-square&label=release"></a>
   <a href="https://chromewebstore.google.com/detail/deepseek++/kdmpkkahkhdmdhfkdihkopikgcocbpbf?hl=zh-CN"><img alt="Chrome Web Store" src="https://img.shields.io/badge/Chrome%20Web%20Store-available-16a34a?style=flat-square"></a>
   <a href="#license"><img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-2563eb?style=flat-square"></a>
   <a href="https://chat.deepseek.com"><img alt="DeepSeek" src="https://img.shields.io/badge/DeepSeek-web-4f46e5?style=flat-square"></a>
@@ -32,6 +32,14 @@
   <a href="#1140-变更回顾">1.14.0 变更</a>
 </p>
 
+## 关于本仓库
+
+本仓库是 **XiDee233**（Dee）维护的 DeepSeek++ 独立版本，从 [zhu1090093659/deepseek-pp](https://github.com/zhu1090093659/deepseek-pp) 派生而来，感谢上游作者的出色工作。
+
+上游 DeepSeek++ 以 Apache-2.0 协议开源。本仓库于 2026 年 9 月从上游 `main` 分支分出（基线提交 `0a02c72`），此后作为独立仓库单独维护，不再跟随上游同步；功能演进、构建产物和发布节奏均由本仓库自行决定。
+
+因此，本仓库内的安装步骤、构建命令、扩展 ID 与发布说明均以本仓库为准。如果你需要上游原版或上游的最新进展，请访问[上游仓库](https://github.com/zhu1090093659/deepseek-pp)。
+
 ## 产品定位
 
 DeepSeek++ 是面向 [DeepSeek](https://chat.deepseek.com) 网页版的开源浏览器扩展，支持 Chrome、Edge 和 Firefox。它把 DeepSeek Web 扩展成 AI agent workspace，让用户在同一浏览器工作流里使用中英文界面、MCP 工具、图片/视频多模态分析、长期记忆、Skill、系统提示词预设、联网搜索、网页读取、对话导出和定时自动化。
@@ -42,6 +50,7 @@ DeepSeek++ 是面向 [DeepSeek](https://chat.deepseek.com) 网页版的开源浏
 
 ## 目录
 
+- [关于本仓库](#关于本仓库)
 - [产品定位](#产品定位)
 - [功能速览](#功能速览)
 - [适合场景](#适合场景)
@@ -1098,8 +1107,8 @@ Chrome 用户可以直接从 [Chrome Web Store](https://chromewebstore.google.co
 ### 从源码构建
 
 ```bash
-git clone https://github.com/zhu1090093659/deepseek-pp.git
-cd deepseek-pp
+git clone https://github.com/XiDee233/deepseek-pp_Dee.git
+cd deepseek-pp_Dee
 npm install
 npm run build
 ```
