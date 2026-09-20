@@ -80,7 +80,8 @@ function OAuthConfigFields({ state }: { state: SettingsState }) {
           <span className="inline-block w-3 h-3 border-2 border-current border-t-transparent rounded-full animate-spin" />
         ) : (
           <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M15 7a2 2 0 12-4 2 2 0 014 0zM5 19a4 4 0 014-4h6a4 4 0 014 4M12 11v8m-3-3l3 3 3-3" />
+            {/* Each head arc needs a complete radius, rotation, flags and endpoint. */}
+            <path strokeLinecap="round" strokeLinejoin="round" d="M15 7a2 2 0 1 0-4 2a2 2 0 0 1 4 0zM5 19a4 4 0 014-4h6a4 4 0 014 4M12 11v8m-3-3l3 3 3-3" />
           </svg>
         )}
         {authorized ? t('sidepanel.settings.reauthorize') : t('sidepanel.settings.authorize')}
