@@ -8891,7 +8891,6 @@ function stripToolCallTextNodes(root: Element) {
   if (!containsCleanableText(root.textContent)) return;
 
   const textNodes: Text[] = [];
-  const changedParents = new Set<HTMLElement>();
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
     acceptNode(node) {
       const parent = node.parentElement;
@@ -8987,14 +8986,12 @@ function stripToolCallTextNodes(root: Element) {
 
     next = collapseRenderedExcessBlankLines(next);
     if (next !== original) {
+      // React retains these native Text/Element identities for later updates.
+      // Clear only the text: pruning an empty span/paragraph leaves React's
+      // next insertBefore/removeChild pointing at a detached reference node.
       textNode.nodeValue = next;
-      if (textNode.parentElement) changedParents.add(textNode.parentElement);
     }
     lastNodeEndsWithNewline = /\n$/.test(next);
-  }
-
-  for (const parent of changedParents) {
-    pruneEmptyToolContainers(parent, root);
   }
 }
 
@@ -9047,27 +9044,6 @@ function shouldReplaceRenderedTaskCompleteBlock(textNode: Text): boolean {
   return getAssistantContentHosts(message).some((host) =>
     host.contains(parent),
   );
-}
-
-function pruneEmptyToolContainers(start: HTMLElement, boundary: Element) {
-  let el: HTMLElement | null = start;
-  while (el && el !== boundary && !el.classList.contains("ds-message")) {
-    const parent: HTMLElement | null = el.parentElement;
-    const hasVisibleText = (el.textContent ?? "").trim().length > 0;
-    const hasProtectedChild = Boolean(
-      el.querySelector(
-        ".dpp-tool-block, img, svg, canvas, video, button, input, textarea",
-      ),
-    );
-
-    if (!hasVisibleText && !hasProtectedChild) {
-      el.remove();
-      el = parent;
-      continue;
-    }
-
-    el = parent;
-  }
 }
 
 function collapseToolBlock(block: HTMLElement | null = toolBlockEl) {
